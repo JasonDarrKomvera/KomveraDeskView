@@ -1,0 +1,2898 @@
+const express = require('express');
+const cors = require('cors');
+const session = require('express-session');
+const passport = require('passport');
+const { OIDCStrategy } = require('passport-azure-ad');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcrypt');
+const crypto = require('crypto');
+const multer = require('multer');
+const sharp = require('sharp');
+
+const app = express();
+const PORT = 3000;
+const BCRYPT_ROUNDS = 12;
+
+app.use((req, res, next) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    next();
+});
+
+/*
+==================================================
+DATEIEN
+==================================================
+*/
+const DATA_DIR = __dirname;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const LOGO_FILE = path.join(PUBLIC_DIR, 'logo.png');
+const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
+const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+
+/*
+==================================================
+BERECHTIGUNGEN
+==================================================
+*/
+const PERMISSION_GROUPS = [
+    {
+        title: 'Allgemein',
+        permissions: [
+            {
+                key: 'dashboard.view',
+                label: 'Dashboard anzeigen',
+                description: 'Darf die Startseite des Adminbereichs öffnen.'
+            }
+        ]
+    },
+    {
+        title: 'Räume',
+        permissions: [
+            {
+                key: 'rooms.view',
+                label: 'Räume anzeigen',
+                description: 'Darf alle Räume und deren Belegung sehen.'
+            },
+            {
+                key: 'rooms.create',
+                label: 'Räume erstellen',
+                description: 'Darf neue Räume anlegen.'
+            },
+            {
+                key: 'rooms.edit',
+                label: 'Räume bearbeiten',
+                description: 'Darf Abteilung und Raumnummer bestehender Räume ändern.'
+            },
+            {
+                key: 'rooms.delete',
+                label: 'Räume löschen',
+                description: 'Darf komplette Räume entfernen.'
+            },
+            {
+                key: 'rooms.clearSeat',
+                label: 'Plätze leeren',
+                description: 'Darf belegte Sitzplätze wieder freigeben.'
+            }
+        ]
+    },
+    {
+        title: 'Raumlinks / Ansichten',
+        permissions: [
+            {
+                key: 'links.view',
+                label: 'Raumlinks anzeigen',
+                description: 'Darf die Übersicht mit allen Raumansichten, APIs und Sitzplatzlinks sehen.'
+            }
+        ]
+    },
+    {
+        title: 'Admins',
+        permissions: [
+            {
+                key: 'admins.view',
+                label: 'Admins anzeigen',
+                description: 'Darf die Adminverwaltung öffnen.'
+            },
+            {
+                key: 'admins.create',
+                label: 'Admins erstellen',
+                description: 'Darf neue Admins anlegen.'
+            },
+            {
+                key: 'admins.edit',
+                label: 'Admins bearbeiten',
+                description: 'Darf Berechtigungen anderer normaler Admins ändern.'
+            },
+            {
+                key: 'admins.delete',
+                label: 'Admins löschen',
+                description: 'Darf normale Admins löschen. Der Master ist ausgenommen.'
+            }
+        ]
+    },
+    {
+        title: 'Microsoft',
+        permissions: [
+            {
+                key: 'microsoft.view',
+                label: 'Microsoft-Konfiguration anzeigen',
+                description: 'Darf die gespeicherten Microsoft-/Entra-Daten sehen.'
+            },
+            {
+                key: 'microsoft.edit',
+                label: 'Microsoft-Konfiguration bearbeiten',
+                description: 'Darf Client-ID, Tenant-ID, Secret und Callback ändern.'
+            }
+        ]
+    },
+    {
+        title: 'System',
+        permissions: [
+            {
+                key: 'system.settings',
+                label: 'System-Einstellungen',
+                description: 'Darf Session Secret ändern.'
+            },
+            {
+                key: 'system.logo',
+                label: 'Logo verwalten',
+                description: 'Darf das Logo der Anwendung hochladen und ersetzen.'
+            }
+        ]
+    }
+];
+
+const AVAILABLE_PERMISSIONS = PERMISSION_GROUPS.flatMap(group =>
+    group.permissions.map(permission => permission.key)
+);
+
+/*
+==================================================
+DEFAULTS
+==================================================
+*/
+const DEFAULT_ROOMS = {
+    room1: {
+        id: 'room1',
+        abteilung: 'IT',
+        roomnumber: 'R.201',
+        seats: [
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' }
+        ]
+    },
+    room2: {
+        id: 'room2',
+        abteilung: 'Buchhaltung',
+        roomnumber: 'R.103',
+        seats: [
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' },
+            { name: 'Frei', title: '' }
+        ]
+    }
+};
+
+const DEFAULT_CONFIG = {
+    sessionSecret: '',
+    microsoft: {
+        clientID: '',
+        tenantID: '',
+        clientSecret: '',
+        callbackURL: ''
+    }
+};
+
+/*
+==================================================
+JSON FUNKTIONEN
+==================================================
+*/
+function deepClone(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function ensureJsonFile(filePath, defaultValue) {
+    if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), 'utf8');
+        return deepClone(defaultValue);
+    }
+
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        return JSON.parse(raw);
+    } catch (err) {
+        console.error(`Fehler beim Laden von ${filePath}:`, err);
+        fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), 'utf8');
+        return deepClone(defaultValue);
+    }
+}
+
+function writeJsonFile(filePath, data) {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
+
+/*
+==================================================
+DATEN LADEN
+==================================================
+*/
+let rooms = ensureJsonFile(ROOMS_FILE, DEFAULT_ROOMS);
+let admins = ensureJsonFile(ADMINS_FILE, []);
+let appConfig = ensureJsonFile(CONFIG_FILE, DEFAULT_CONFIG);
+
+if (!appConfig || typeof appConfig !== 'object') {
+    appConfig = deepClone(DEFAULT_CONFIG);
+}
+
+if (typeof appConfig.sessionSecret !== 'string') {
+    appConfig.sessionSecret = '';
+}
+
+if (!appConfig.microsoft || typeof appConfig.microsoft !== 'object') {
+    appConfig.microsoft = deepClone(DEFAULT_CONFIG.microsoft);
+}
+
+let microsoftConfig = appConfig.microsoft;
+
+/*
+==================================================
+EXPRESS BASIS
+==================================================
+*/
+app.use(express.static('public'));
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/*
+==================================================
+UPLOAD
+==================================================
+*/
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 5 * 1024 * 1024
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedMimeTypes = [
+            'image/png',
+            'image/jpeg',
+            'image/jpg',
+            'image/webp'
+        ];
+
+        if (!allowedMimeTypes.includes(file.mimetype)) {
+            return cb(new Error('Nur PNG, JPG, JPEG oder WEBP sind erlaubt.'));
+        }
+
+        cb(null, true);
+    }
+});
+
+/*
+==================================================
+HILFSFUNKTIONEN
+==================================================
+*/
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function ensurePublicDir() {
+    if (!fs.existsSync(PUBLIC_DIR)) {
+        fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+    }
+}
+
+async function saveLogoFromBuffer(fileBuffer) {
+    ensurePublicDir();
+
+    await sharp(fileBuffer)
+        .png()
+        .toFile(LOGO_FILE);
+}
+
+function renderSupportFooter(extraText = '') {
+    return `
+        <div class="support-footer">
+            ${extraText ? `<div class="support-footer-text">${extraText}</div>` : ''}
+            <div>
+                &copy; ${new Date().getFullYear()} Komvera IT GmbH ·
+                <a href="https://www.komvera.de" target="_blank" rel="noopener noreferrer">www.komvera.de</a> ·
+                <a href="mailto:info@komvera.de">info@komvera.de</a>
+            </div>
+        </div>
+    `;
+}
+
+function saveRooms() {
+    writeJsonFile(ROOMS_FILE, rooms);
+}
+
+function saveAdmins() {
+    writeJsonFile(ADMINS_FILE, admins);
+}
+
+function saveAppConfig() {
+    appConfig.microsoft = microsoftConfig;
+    writeJsonFile(CONFIG_FILE, appConfig);
+}
+
+function saveMicrosoftConfig() {
+    appConfig.microsoft = microsoftConfig;
+    saveAppConfig();
+}
+
+function hasAnyAdmins() {
+    return Array.isArray(admins) && admins.length > 0;
+}
+
+function getRoom(roomId) {
+    return rooms[roomId] || null;
+}
+
+function isValidSeat(seat) {
+    return Number.isInteger(seat) && seat >= 1 && seat <= 4;
+}
+
+function normalizeAdmin(admin) {
+    return {
+        username: String(admin?.username || '').trim(),
+        passwordHash: String(admin?.passwordHash || ''),
+        master: Boolean(admin?.master),
+        permissions: Array.isArray(admin?.permissions)
+            ? admin.permissions.filter(p => AVAILABLE_PERMISSIONS.includes(p))
+            : []
+    };
+}
+
+function getAdminUser(username) {
+    return admins.find(a => a.username === username) || null;
+}
+
+function getCurrentAdmin(req) {
+    if (!req.session?.adminUsername) {
+        return null;
+    }
+    return getAdminUser(req.session.adminUsername);
+}
+
+function hasPermission(req, permission) {
+    const admin = getCurrentAdmin(req);
+
+    if (!admin) {
+        return false;
+    }
+
+    if (admin.master) {
+        return true;
+    }
+
+    return admin.permissions.includes(permission);
+}
+
+function isSetupRequired() {
+    return !hasAnyAdmins() || !String(appConfig.sessionSecret || '').trim();
+}
+
+function generateStrongSecret() {
+    return crypto.randomBytes(64).toString('hex');
+}
+
+function ensureSingleMasterAdmin() {
+    admins = Array.isArray(admins) ? admins.map(normalizeAdmin) : [];
+
+    const masters = admins.filter(a => a.master);
+
+    if (masters.length <= 1) {
+        saveAdmins();
+        return;
+    }
+
+    const firstMaster = masters[0];
+
+    admins = admins.map(admin => ({
+        ...admin,
+        master: admin.username === firstMaster.username
+    }));
+
+    saveAdmins();
+}
+
+function hasMicrosoftConfig() {
+    return Boolean(
+        String(microsoftConfig.clientID || '').trim() &&
+        String(microsoftConfig.tenantID || '').trim() &&
+        String(microsoftConfig.clientSecret || '').trim() &&
+        String(microsoftConfig.callbackURL || '').trim()
+    );
+}
+
+function requireAdmin(req, res, next) {
+    if (req.session && req.session.adminAuthenticated && getCurrentAdmin(req)) {
+        return next();
+    }
+    return res.redirect('/admin/login');
+}
+
+function requirePermission(permission) {
+    return (req, res, next) => {
+        if (hasPermission(req, permission)) {
+            return next();
+        }
+
+        return res.status(403).send(`
+            <html lang="de">
+            <head>
+                <meta charset="UTF-8">
+                <title>Keine Berechtigung</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        text-align: center;
+                        padding-top: 60px;
+                    }
+                    .support-footer {
+                        margin-top: 30px;
+                        padding-top: 18px;
+                        border-top: 1px solid #e5e7eb;
+                        text-align: center;
+                        font-size: 14px;
+                        color: #6b7280;
+                    }
+                    .support-footer a {
+                        color: #2563eb;
+                        text-decoration: none;
+                    }
+                    .support-footer a:hover {
+                        text-decoration: underline;
+                    }
+                </style>
+            </head>
+            <body>
+                <h2>Keine Berechtigung</h2>
+                <p>Dir fehlt die Berechtigung: ${escapeHtml(permission)}</p>
+                <p><a href="/admin">Zurück zum Adminbereich</a></p>
+                ${renderSupportFooter()}
+            </body>
+            </html>
+        `);
+    };
+}
+
+function renderPermissionCheckboxes(selectedPermissions = []) {
+    return PERMISSION_GROUPS.map(group => `
+        <div class="perm-group">
+            <div class="perm-group-title">${escapeHtml(group.title)}</div>
+            <div class="perm-group-list">
+                ${group.permissions.map(permission => `
+                    <label class="perm-item">
+                        <div class="perm-text">
+                            <div class="perm-label">${escapeHtml(permission.label)}</div>
+                            <div class="perm-description">${escapeHtml(permission.description)}</div>
+                        </div>
+                        <div class="perm-check">
+                            <input
+                                type="checkbox"
+                                name="permissions"
+                                value="${escapeHtml(permission.key)}"
+                                ${selectedPermissions.includes(permission.key) ? 'checked' : ''}
+                            >
+                        </div>
+                    </label>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function formatAdminPermissions(admin) {
+    if (admin.master) {
+        return '<span class="badge badge-master">Alle Rechte</span>';
+    }
+
+    const granted = PERMISSION_GROUPS.map(group => {
+        const matches = group.permissions.filter(permission =>
+            admin.permissions.includes(permission.key)
+        );
+
+        if (matches.length === 0) {
+            return '';
+        }
+
+        return `
+            <div style="margin-bottom:10px;">
+                <div style="font-weight:700;margin-bottom:4px;">${escapeHtml(group.title)}</div>
+                ${matches.map(item => `<div class="muted">• ${escapeHtml(item.label)}</div>`).join('')}
+            </div>
+        `;
+    }).filter(Boolean).join('');
+
+    return granted || '<span class="muted">Keine Rechte</span>';
+}
+
+function renderSidebar(req) {
+    const items = [
+        hasPermission(req, 'dashboard.view') ? `<a href="/admin">Dashboard</a>` : '',
+        hasPermission(req, 'rooms.view') ? `<a href="/admin/rooms">Räume</a>` : '',
+        hasPermission(req, 'links.view') ? `<a href="/admin/links">Raumlinks</a>` : '',
+        hasPermission(req, 'admins.view') ? `<a href="/admin/admins">Admins</a>` : '',
+        hasPermission(req, 'microsoft.view') ? `<a href="/admin/microsoft">Microsoft</a>` : '',
+        hasPermission(req, 'system.settings') ? `<a href="/admin/system">System</a>` : '',
+        hasPermission(req, 'system.logo') ? `<a href="/admin/logo">Logo</a>` : '',
+        `<a href="/admin/account">Mein Konto</a>`,
+        `<a href="/admin/logout">Logout</a>`
+    ].filter(Boolean).join('');
+
+    return `
+        <aside class="sidebar">
+            <div class="brand">Komvera DeskView Admin</div>
+            <nav class="nav">
+                ${items}
+            </nav>
+        </aside>
+    `;
+}
+
+function renderAdminLayout(req, title, content) {
+    return `
+    <html lang="de">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${escapeHtml(title)}</title>
+        <style>
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                font-family: Arial, sans-serif;
+                background: #f4f6f8;
+                color: #1f2937;
+            }
+            .layout {
+                display: flex;
+                min-height: 100vh;
+            }
+            .sidebar {
+                width: 260px;
+                background: #111827;
+                color: white;
+                padding: 24px 18px;
+            }
+            .brand {
+                font-size: 24px;
+                font-weight: bold;
+                margin-bottom: 28px;
+            }
+            .nav a {
+                display: block;
+                color: #e5e7eb;
+                text-decoration: none;
+                padding: 12px 14px;
+                border-radius: 10px;
+                margin-bottom: 8px;
+            }
+            .nav a:hover {
+                background: #1f2937;
+            }
+            .main {
+                flex: 1;
+                padding: 30px;
+                display: flex;
+                flex-direction: column;
+                min-height: 100vh;
+            }
+            .page-content {
+                flex: 1;
+            }
+            .page-title {
+                margin-top: 0;
+                margin-bottom: 24px;
+                font-size: 30px;
+            }
+            .card {
+                background: white;
+                border-radius: 16px;
+                padding: 22px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.07);
+                margin-bottom: 22px;
+            }
+            .grid-2 {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 22px;
+            }
+            .grid-3 {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 22px;
+            }
+            .stat {
+                font-size: 34px;
+                font-weight: bold;
+                margin-top: 10px;
+            }
+            label {
+                display: block;
+                margin-bottom: 8px;
+                font-weight: 600;
+            }
+            input, textarea, select {
+                width: 100%;
+                padding: 12px 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+                margin-bottom: 16px;
+                font-size: 15px;
+            }
+            input[type="file"] {
+                padding: 10px;
+                background: #fff;
+            }
+            button {
+                padding: 12px 16px;
+                border: none;
+                border-radius: 10px;
+                background: #2563eb;
+                color: white;
+                font-weight: bold;
+                cursor: pointer;
+            }
+            button:hover {
+                background: #1d4ed8;
+            }
+            .btn-danger {
+                background: #dc2626;
+            }
+            .btn-danger:hover {
+                background: #b91c1c;
+            }
+            .btn-secondary {
+                background: #6b7280;
+            }
+            .btn-secondary:hover {
+                background: #4b5563;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            th, td {
+                text-align: left;
+                padding: 12px;
+                border-bottom: 1px solid #e5e7eb;
+                vertical-align: top;
+            }
+            .muted {
+                color: #6b7280;
+            }
+            .topbar {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 24px;
+                gap: 16px;
+            }
+            .small-link {
+                color: #2563eb;
+                text-decoration: none;
+            }
+            .small-link:hover {
+                text-decoration: underline;
+            }
+            .inline-form {
+                display: inline;
+            }
+            .badge {
+                display: inline-block;
+                padding: 6px 10px;
+                border-radius: 999px;
+                background: #eef2ff;
+                color: #3730a3;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            .badge-master {
+                background: #fef3c7;
+                color: #92400e;
+            }
+            .links-row a {
+                display: inline-block;
+                margin-right: 10px;
+                margin-bottom: 10px;
+            }
+            .permission-box {
+                background: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                padding: 16px;
+            }
+            .perm-group {
+                margin-bottom: 18px;
+            }
+            .perm-group:last-child {
+                margin-bottom: 0;
+            }
+            .perm-group-title {
+                font-size: 15px;
+                font-weight: 700;
+                margin-bottom: 10px;
+                color: #111827;
+            }
+            .perm-group-list {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            .perm-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 16px;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 14px 16px;
+                margin: 0;
+                font-weight: normal;
+            }
+            .perm-text {
+                flex: 1;
+            }
+            .perm-label {
+                font-weight: 700;
+                margin-bottom: 4px;
+                color: #111827;
+            }
+            .perm-description {
+                font-size: 14px;
+                color: #6b7280;
+                line-height: 1.4;
+            }
+            .perm-check {
+                flex-shrink: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .perm-check input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                margin: 0;
+            }
+            .notice {
+                padding: 12px 14px;
+                border-radius: 12px;
+                background: #eff6ff;
+                color: #1d4ed8;
+                margin-bottom: 16px;
+                border: 1px solid #bfdbfe;
+            }
+            .notice-warn {
+                background: #fff7ed;
+                color: #9a3412;
+                border-color: #fdba74;
+            }
+            .code-box {
+                background: #111827;
+                color: #f9fafb;
+                padding: 14px;
+                border-radius: 12px;
+                overflow: auto;
+                font-family: Consolas, monospace;
+                font-size: 14px;
+                word-break: break-all;
+            }
+            .support-footer {
+                margin-top: 30px;
+                padding-top: 18px;
+                border-top: 1px solid #e5e7eb;
+                text-align: center;
+                font-size: 14px;
+                color: #6b7280;
+            }
+            .support-footer a {
+                color: #2563eb;
+                text-decoration: none;
+            }
+            .support-footer a:hover {
+                text-decoration: underline;
+            }
+            .support-footer-text {
+                margin-bottom: 8px;
+            }
+            @media (max-width: 900px) {
+                .layout {
+                    display: block;
+                }
+                .sidebar {
+                    width: 100%;
+                }
+                .grid-2, .grid-3 {
+                    grid-template-columns: 1fr;
+                }
+                .main {
+                    padding: 20px;
+                    min-height: auto;
+                }
+                .perm-item {
+                    align-items: flex-start;
+                }
+                .perm-check {
+                    padding-top: 2px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="layout">
+            ${renderSidebar(req)}
+            <main class="main">
+                <div class="page-content">
+                    ${content}
+                </div>
+                ${renderSupportFooter()}
+            </main>
+        </div>
+    </body>
+    </html>
+    `;
+}
+
+function renderRoomApiJson(room) {
+    return {
+        abteilung: room.abteilung,
+        roomnumber: room.roomnumber,
+        name1: room.seats[0].name,
+        title1: room.seats[0].title,
+        name2: room.seats[1].name,
+        title2: room.seats[1].title,
+        name3: room.seats[2].name,
+        title3: room.seats[2].title,
+        name4: room.seats[3].name,
+        title4: room.seats[3].title
+    };
+}
+
+async function fetchMicrosoftUser(accessToken) {
+    const response = await fetch(
+        'https://graph.microsoft.com/v1.0/me?$select=displayName,givenName,surname,jobTitle,mail,userPrincipalName',
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`
+            }
+        }
+    );
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Microsoft Graph Fehler: ${response.status} ${text}`);
+    }
+
+    return response.json();
+}
+
+/*
+==================================================
+SESSION
+==================================================
+*/
+ensureSingleMasterAdmin();
+const bootstrapSessionSecret = generateStrongSecret();
+
+app.use(session({
+    secret: String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: false
+    }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+/*
+==================================================
+SETUP ERZWINGEN
+==================================================
+*/
+app.use((req, res, next) => {
+    if (!isSetupRequired()) {
+        return next();
+    }
+
+    const allowedPaths = [
+        '/admin/setup',
+        '/favicon.ico'
+    ];
+
+    const staticAllowed =
+        req.path === '/logo.png' ||
+        req.path.startsWith('/public/');
+
+    if (allowedPaths.includes(req.path) || staticAllowed) {
+        return next();
+    }
+
+    return res.redirect('/admin/setup');
+});
+
+/*
+==================================================
+PASSPORT
+==================================================
+*/
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((user, done) => done(null, user));
+
+function configurePassportStrategy() {
+    if (!hasMicrosoftConfig()) {
+        return;
+    }
+
+    passport.use(
+        'azuread-openidconnect',
+        new OIDCStrategy(
+            {
+                identityMetadata: `https://login.microsoftonline.com/${microsoftConfig.tenantID}/v2.0/.well-known/openid-configuration`,
+                clientID: microsoftConfig.clientID,
+                clientSecret: microsoftConfig.clientSecret,
+                responseType: 'code',
+                responseMode: 'query',
+                redirectUrl: microsoftConfig.callbackURL,
+                allowHttpForRedirectUrl: false,
+                validateIssuer: false,
+                passReqToCallback: true,
+                scope: [
+                    'openid',
+                    'profile',
+                    'email',
+                    'offline_access',
+                    'https://graph.microsoft.com/User.Read'
+                ],
+                loggingLevel: 'warn',
+                nonceLifetime: 600,
+                nonceMaxAmount: 5,
+                useCookieInsteadOfSession: false
+            },
+            async (req, iss, sub, profile, accessToken, refreshToken, params, done) => {
+                try {
+                    const pendingRoom = req.session?.pendingRoom || null;
+                    const pendingSeat = Number.parseInt(req.session?.pendingSeat, 10);
+
+                    if (!pendingRoom || !getRoom(pendingRoom)) {
+                        return done(new Error('Kein gültiger Raum in der Session gefunden.'));
+                    }
+
+                    if (!isValidSeat(pendingSeat)) {
+                        return done(new Error('Kein gültiger Platz in der Session gefunden.'));
+                    }
+
+                    if (!accessToken) {
+                        return done(new Error('Kein Access Token von Microsoft erhalten.'));
+                    }
+
+                    const graphUser = await fetchMicrosoftUser(accessToken);
+
+                    const user = {
+                        displayName: graphUser.displayName || profile?.displayName || 'Unbekannt',
+                        givenName: graphUser.givenName || '',
+                        surname: graphUser.surname || '',
+                        jobTitle: graphUser.jobTitle || 'Mitarbeiter',
+                        mail: graphUser.mail || graphUser.userPrincipalName || '',
+                        pendingRoom,
+                        pendingSeat
+                    };
+
+                    return done(null, user);
+                } catch (error) {
+                    return done(error);
+                }
+            }
+        )
+    );
+}
+
+configurePassportStrategy();
+
+/*
+==================================================
+STARTSEITE
+==================================================
+*/
+app.get('/', (req, res) => {
+    res.send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <title>Komvera DeskView Server</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    padding: 40px;
+                    color: #1f2937;
+                }
+                a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                a:hover {
+                    text-decoration: underline;
+                }
+                .support-footer {
+                    margin-top: 40px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #6b7280;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Komvera DeskView Server läuft</h1>
+            <p><a href="/room1/api/deskview">room1 DeskView API</a></p>
+            <p><a href="/room1/api/Komvera">room1 Legacy API</a></p>
+            <p><a href="/room1/sit/1">room1 Platz 1</a></p>
+            <p><a href="/admin/login">Admin Login</a></p>
+            ${renderSupportFooter()}
+        </body>
+        </html>
+    `);
+});
+
+/*
+==================================================
+ERSTEINRICHTUNG
+==================================================
+*/
+app.get('/admin/setup', (req, res) => {
+    if (!isSetupRequired()) {
+        return res.redirect('/admin/login');
+    }
+
+    const generatedSecret = generateStrongSecret();
+
+    res.send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Ersteinrichtung</title>
+            <style>
+                * { box-sizing: border-box; }
+                body {
+                    margin: 0;
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: #f3f4f6;
+                    font-family: Arial, sans-serif;
+                    padding: 24px;
+                }
+                .box {
+                    width: 100%;
+                    max-width: 820px;
+                    background: white;
+                    border-radius: 18px;
+                    padding: 32px;
+                    box-shadow: 0 15px 35px rgba(0,0,0,0.08);
+                }
+                h1, h2 {
+                    margin-top: 0;
+                }
+                p {
+                    color: #6b7280;
+                    line-height: 1.5;
+                }
+                input {
+                    width: 100%;
+                    padding: 12px;
+                    margin: 8px 0 16px 0;
+                    border: 1px solid #d1d5db;
+                    border-radius: 10px;
+                    box-sizing: border-box;
+                }
+                button {
+                    width: 100%;
+                    padding: 12px;
+                    background: #2563eb;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    margin-top: 8px;
+                }
+                .grid-2 {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 24px;
+                }
+                .card {
+                    background: #f9fafb;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 14px;
+                    padding: 18px;
+                }
+                .hint {
+                    background: #eff6ff;
+                    border: 1px solid #bfdbfe;
+                    color: #1d4ed8;
+                    padding: 12px 14px;
+                    border-radius: 12px;
+                    margin-bottom: 18px;
+                }
+                .support-footer {
+                    margin-top: 30px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #6b7280;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+                @media (max-width: 800px) {
+                    .grid-2 {
+                        grid-template-columns: 1fr;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h1>Komvera DeskView Ersteinrichtung</h1>
+                <p>
+                    Beim ersten Start wurden automatisch <strong>rooms.json</strong>, <strong>admins.json</strong>
+                    und <strong>config.json</strong> erstellt.
+                    Jetzt musst du einmalig den Master-Admin und das Session Secret festlegen.
+                </p>
+
+                <div class="hint">
+                    <strong>Wofür ist das Session Secret da?</strong><br>
+                    Es schützt deine Login-Sessions. Es signiert die Session-Cookies, damit diese
+                    nicht manipuliert werden können.
+                </div>
+
+                <form method="POST" action="/admin/setup">
+                    <div class="grid-2">
+                        <div class="card">
+                            <h2>Master-Admin</h2>
+
+                            <label>Benutzername</label>
+                            <input type="text" name="username" required>
+
+                            <label>Passwort</label>
+                            <input type="password" name="password" required>
+
+                            <label>Passwort wiederholen</label>
+                            <input type="password" name="confirmPassword" required>
+                        </div>
+
+                        <div class="card">
+                            <h2>Session Secret</h2>
+
+                            <label>Session Secret</label>
+                            <input type="text" name="sessionSecret" value="${escapeHtml(generatedSecret)}" required>
+
+                            <p>
+                                Der vorgeschlagene Wert ist bereits stark genug.
+                                Du kannst ihn übernehmen oder durch einen eigenen langen Zufallswert ersetzen.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top:24px;">
+                        <h2>Microsoft / Entra (optional)</h2>
+
+                        <label>Client ID</label>
+                        <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}">
+
+                        <label>Tenant ID</label>
+                        <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}">
+
+                        <label>Client Secret</label>
+                        <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}">
+
+                        <label>Callback URL</label>
+                        <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}">
+                    </div>
+
+                    <button type="submit">Ersteinrichtung abschließen</button>
+                </form>
+                ${renderSupportFooter()}
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+app.post('/admin/setup', async (req, res) => {
+    try {
+        if (!isSetupRequired()) {
+            return res.redirect('/admin/login');
+        }
+
+        const username = String(req.body.username || '').trim();
+        const password = String(req.body.password || '');
+        const confirmPassword = String(req.body.confirmPassword || '');
+        const sessionSecret = String(req.body.sessionSecret || '').trim();
+
+        const clientID = String(req.body.clientID || '').trim();
+        const tenantID = String(req.body.tenantID || '').trim();
+        const clientSecret = String(req.body.clientSecret || '').trim();
+        const callbackURL = String(req.body.callbackURL || '').trim();
+
+        if (!username || !password || !confirmPassword || !sessionSecret) {
+            return res.status(400).send('Bitte alle Pflichtfelder ausfüllen');
+        }
+
+        if (password !== confirmPassword) {
+            return res.status(400).send('Die Passwörter stimmen nicht überein');
+        }
+
+        if (password.length < 8) {
+            return res.status(400).send('Das Passwort muss mindestens 8 Zeichen lang sein');
+        }
+
+        if (sessionSecret.length < 32) {
+            return res.status(400).send('Das Session Secret sollte mindestens 32 Zeichen lang sein');
+        }
+
+        if (hasAnyAdmins()) {
+            return res.status(400).send('Es existiert bereits ein Admin');
+        }
+
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+        admins = [
+            normalizeAdmin({
+                username,
+                passwordHash,
+                master: true,
+                permissions: []
+            })
+        ];
+        saveAdmins();
+
+        appConfig.sessionSecret = sessionSecret;
+        microsoftConfig = {
+            clientID,
+            tenantID,
+            clientSecret,
+            callbackURL
+        };
+        saveAppConfig();
+
+        return res.send(`
+            <html lang="de">
+            <head>
+                <meta charset="UTF-8">
+                <title>Setup abgeschlossen</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        text-align: center;
+                        padding-top: 60px;
+                    }
+                    .support-footer {
+                        margin-top: 30px;
+                        padding-top: 18px;
+                        border-top: 1px solid #e5e7eb;
+                        text-align: center;
+                        font-size: 14px;
+                        color: #6b7280;
+                    }
+                    .support-footer a {
+                        color: #2563eb;
+                        text-decoration: none;
+                    }
+                    .support-footer a:hover {
+                        text-decoration: underline;
+                    }
+                </style>
+            </head>
+            <body>
+                <h2>Ersteinrichtung abgeschlossen</h2>
+                <p>Master-Admin und Konfiguration wurden gespeichert.</p>
+                <p>Bitte den Server einmal neu starten, damit das neue Session Secret aktiv verwendet wird.</p>
+                <p><a href="/admin/login">Zum Login</a></p>
+                ${renderSupportFooter()}
+            </body>
+            </html>
+        `);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Ersteinrichtung fehlgeschlagen');
+    }
+});
+
+/*
+==================================================
+ADMIN LOGIN
+==================================================
+*/
+app.get('/admin/login', (req, res) => {
+    if (isSetupRequired()) {
+        return res.redirect('/admin/setup');
+    }
+
+    res.send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <title>Admin Login</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    margin: 0;
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: #f3f4f6;
+                    font-family: Arial, sans-serif;
+                    padding: 24px;
+                }
+                .box {
+                    width: 100%;
+                    max-width: 420px;
+                    background: white;
+                    border-radius: 18px;
+                    padding: 32px;
+                    box-shadow: 0 15px 35px rgba(0,0,0,0.08);
+                }
+                h2 { margin-top: 0; }
+                input {
+                    width: 100%;
+                    padding: 12px;
+                    margin: 10px 0;
+                    border: 1px solid #d1d5db;
+                    border-radius: 10px;
+                    box-sizing: border-box;
+                }
+                button {
+                    width: 100%;
+                    padding: 12px;
+                    background: #2563eb;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    cursor: pointer;
+                }
+                .muted {
+                    color: #6b7280;
+                    font-size: 14px;
+                    margin-top: 10px;
+                }
+                .support-footer {
+                    margin-top: 24px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #6b7280;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>Komvera DeskView Admin Login</h2>
+                <form method="POST" action="/admin/login">
+                    <input type="text" name="username" placeholder="Benutzername" required>
+                    <input type="password" name="password" placeholder="Passwort" required>
+                    <button type="submit">Anmelden</button>
+                </form>
+                <div class="muted">
+                    Falls das System noch nicht eingerichtet wurde, wirst du automatisch zum Setup umgeleitet.
+                </div>
+                ${renderSupportFooter()}
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+app.post('/admin/login', async (req, res) => {
+    try {
+        if (isSetupRequired()) {
+            return res.redirect('/admin/setup');
+        }
+
+        const username = String(req.body.username || '').trim();
+        const password = String(req.body.password || '');
+
+        const admin = getAdminUser(username);
+
+        if (!admin || !admin.passwordHash) {
+            return res.status(401).send('Falsche Zugangsdaten');
+        }
+
+        const valid = await bcrypt.compare(password, admin.passwordHash);
+
+        if (!valid) {
+            return res.status(401).send('Falsche Zugangsdaten');
+        }
+
+        req.session.adminAuthenticated = true;
+        req.session.adminUsername = admin.username;
+        return res.redirect('/admin');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Login fehlgeschlagen');
+    }
+});
+
+app.get('/admin/logout', (req, res) => {
+    req.session.destroy(() => {
+        res.redirect('/admin/login');
+    });
+});
+
+/*
+==================================================
+ADMIN DASHBOARD
+==================================================
+*/
+app.get('/admin', requireAdmin, requirePermission('dashboard.view'), (req, res) => {
+    const occupiedSeats = Object.values(rooms).reduce((sum, room) => {
+        return sum + room.seats.filter(s => s.name && s.name !== 'Frei').length;
+    }, 0);
+
+    const currentAdmin = getCurrentAdmin(req);
+
+    const content = `
+        <div class="topbar">
+            <div>
+                <h1 class="page-title">Dashboard</h1>
+                <div class="muted">
+                    Angemeldet als ${escapeHtml(currentAdmin?.username || 'Admin')}
+                    ${currentAdmin?.master ? '<span class="badge badge-master">MASTER</span>' : ''}
+                </div>
+            </div>
+        </div>
+
+        <div class="grid-3">
+            <div class="card">
+                <div class="muted">Räume</div>
+                <div class="stat">${Object.keys(rooms).length}</div>
+            </div>
+            <div class="card">
+                <div class="muted">Admins</div>
+                <div class="stat">${admins.length}</div>
+            </div>
+            <div class="card">
+                <div class="muted">Belegte Plätze</div>
+                <div class="stat">${occupiedSeats}</div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <h2>Microsoft Konfiguration</h2>
+                <p><strong>Client ID:</strong><br>${escapeHtml(microsoftConfig.clientID || '')}</p>
+                <p><strong>Tenant ID:</strong><br>${escapeHtml(microsoftConfig.tenantID || '')}</p>
+                <p><strong>Callback URL:</strong><br>${escapeHtml(microsoftConfig.callbackURL || '')}</p>
+            </div>
+
+            <div class="card">
+                <h2>Deine Rechte</h2>
+                ${formatAdminPermissions(currentAdmin)}
+            </div>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Dashboard', content));
+});
+
+/*
+==================================================
+MEIN KONTO
+==================================================
+*/
+app.get('/admin/account', requireAdmin, (req, res) => {
+    const admin = getCurrentAdmin(req);
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Mein Konto</h1>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <h2>Kontodaten</h2>
+                <p><strong>Benutzername:</strong><br>${escapeHtml(admin.username)}</p>
+                <p><strong>Typ:</strong><br>${admin.master ? 'Master-Admin' : 'Admin'}</p>
+            </div>
+
+            <div class="card">
+                <h2>Eigenes Passwort ändern</h2>
+                <form method="POST" action="/admin/account/password">
+                    <label>Aktuelles Passwort</label>
+                    <input type="password" name="currentPassword" required>
+
+                    <label>Neues Passwort</label>
+                    <input type="password" name="newPassword" required>
+
+                    <label>Neues Passwort wiederholen</label>
+                    <input type="password" name="confirmPassword" required>
+
+                    <button type="submit">Passwort ändern</button>
+                </form>
+            </div>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Mein Konto', content));
+});
+
+app.post('/admin/account/password', requireAdmin, async (req, res) => {
+    try {
+        const admin = getCurrentAdmin(req);
+
+        const currentPassword = String(req.body.currentPassword || '');
+        const newPassword = String(req.body.newPassword || '');
+        const confirmPassword = String(req.body.confirmPassword || '');
+
+        if (!currentPassword || !newPassword || !confirmPassword) {
+            return res.status(400).send('Bitte alle Felder ausfüllen');
+        }
+
+        if (newPassword !== confirmPassword) {
+            return res.status(400).send('Die neuen Passwörter stimmen nicht überein');
+        }
+
+        if (newPassword.length < 8) {
+            return res.status(400).send('Das neue Passwort muss mindestens 8 Zeichen lang sein');
+        }
+
+        const valid = await bcrypt.compare(currentPassword, admin.passwordHash);
+        if (!valid) {
+            return res.status(400).send('Aktuelles Passwort ist falsch');
+        }
+
+        admin.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+        saveAdmins();
+
+        return res.send(renderAdminLayout(req, 'Passwort geändert', `
+            <div class="topbar">
+                <h1 class="page-title">Mein Konto</h1>
+            </div>
+            <div class="card">
+                <div class="notice">Dein Passwort wurde erfolgreich geändert.</div>
+                <p><a class="small-link" href="/admin/account">Zurück zu Mein Konto</a></p>
+            </div>
+        `));
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Passwort konnte nicht geändert werden');
+    }
+});
+
+/*
+==================================================
+SYSTEM
+==================================================
+*/
+app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (req, res) => {
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">System</h1>
+        </div>
+
+        <div class="card">
+            <h2>Session Secret</h2>
+            <div class="notice notice-warn">
+                Das Session Secret schützt die Login-Sessions.
+                Nach einer Änderung solltest du den Server neu starten.
+            </div>
+
+            <form method="POST" action="/admin/system/session-secret">
+                <label>Neues Session Secret</label>
+                <input type="text" name="sessionSecret" value="${escapeHtml(appConfig.sessionSecret || '')}" required>
+                <button type="submit">Session Secret speichern</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Vorschlag für ein starkes Secret</h2>
+            <div class="code-box">${escapeHtml(generateStrongSecret())}</div>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'System', content));
+});
+
+app.post('/admin/system/session-secret', requireAdmin, requirePermission('system.settings'), (req, res) => {
+    try {
+        const newSecret = String(req.body.sessionSecret || '').trim();
+
+        if (!newSecret) {
+            return res.status(400).send('Session Secret fehlt');
+        }
+
+        if (newSecret.length < 32) {
+            return res.status(400).send('Das Session Secret sollte mindestens 32 Zeichen lang sein');
+        }
+
+        appConfig.sessionSecret = newSecret;
+        saveAppConfig();
+
+        return res.send(renderAdminLayout(req, 'System', `
+            <div class="topbar">
+                <h1 class="page-title">System</h1>
+            </div>
+            <div class="card">
+                <div class="notice">Session Secret gespeichert.</div>
+                <p>Bitte den Server neu starten, damit nur noch das neue Secret aktiv ist.</p>
+                <p><a class="small-link" href="/admin/system">Zurück zu System</a></p>
+            </div>
+        `));
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Session Secret konnte nicht gespeichert werden');
+    }
+});
+
+/*
+==================================================
+LOGO
+==================================================
+*/
+app.get('/admin/logo', requireAdmin, requirePermission('system.logo'), (req, res) => {
+    const logoExists = fs.existsSync(LOGO_FILE);
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Logo verwalten</h1>
+        </div>
+
+        <div class="card">
+            <h2>Aktuelles Logo</h2>
+            ${
+                logoExists
+                    ? `
+                    <div style="margin-bottom:20px;">
+                        <img src="/logo.png?v=${Date.now()}" alt="Aktuelles Logo" style="max-width:320px; width:100%; height:auto; object-fit:contain; border:1px solid #e5e7eb; border-radius:12px; padding:12px; background:#fff;">
+                    </div>
+                    `
+                    : `<p class="muted">Aktuell ist kein Logo vorhanden.</p>`
+            }
+
+            <div class="notice">
+                Das hochgeladene Bild wird automatisch als <strong>logo.png</strong> gespeichert und das alte Logo ersetzt.
+            </div>
+
+            <form method="POST" action="/admin/logo/upload" enctype="multipart/form-data">
+                <label>Neues Logo hochladen</label>
+                <input type="file" name="logo" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
+                <button type="submit">Logo hochladen</button>
+            </form>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Logo verwalten', content));
+});
+
+app.post(
+    '/admin/logo/upload',
+    requireAdmin,
+    requirePermission('system.logo'),
+    (req, res, next) => {
+        upload.single('logo')(req, res, function (err) {
+            if (err) {
+                return res.status(400).send(renderAdminLayout(req, 'Logo verwalten', `
+                    <div class="topbar">
+                        <h1 class="page-title">Logo verwalten</h1>
+                    </div>
+                    <div class="card">
+                        <div class="notice notice-warn">${escapeHtml(err.message || 'Upload fehlgeschlagen.')}</div>
+                        <p><a class="small-link" href="/admin/logo">Zurück zur Logo-Verwaltung</a></p>
+                    </div>
+                `));
+            }
+            next();
+        });
+    },
+    async (req, res) => {
+        try {
+            if (!req.file) {
+                return res.status(400).send(renderAdminLayout(req, 'Logo verwalten', `
+                    <div class="topbar">
+                        <h1 class="page-title">Logo verwalten</h1>
+                    </div>
+                    <div class="card">
+                        <div class="notice notice-warn">Bitte eine Bilddatei auswählen.</div>
+                        <p><a class="small-link" href="/admin/logo">Zurück zur Logo-Verwaltung</a></p>
+                    </div>
+                `));
+            }
+
+            await saveLogoFromBuffer(req.file.buffer);
+
+            return res.send(renderAdminLayout(req, 'Logo verwalten', `
+                <div class="topbar">
+                    <h1 class="page-title">Logo verwalten</h1>
+                </div>
+                <div class="card">
+                    <div class="notice">Logo erfolgreich hochgeladen und ersetzt.</div>
+                    <div style="margin-bottom:20px;">
+                        <img src="/logo.png?v=${Date.now()}" alt="Neues Logo" style="max-width:320px; width:100%; height:auto; object-fit:contain; border:1px solid #e5e7eb; border-radius:12px; padding:12px; background:#fff;">
+                    </div>
+                    <p><a class="small-link" href="/admin/logo">Zurück zur Logo-Verwaltung</a></p>
+                </div>
+            `));
+        } catch (err) {
+            console.error('Logo Upload Fehler:', err);
+            return res.status(500).send(renderAdminLayout(req, 'Logo verwalten', `
+                <div class="topbar">
+                    <h1 class="page-title">Logo verwalten</h1>
+                </div>
+                <div class="card">
+                    <div class="notice notice-warn">Logo konnte nicht gespeichert werden.</div>
+                    <p><a class="small-link" href="/admin/logo">Zurück zur Logo-Verwaltung</a></p>
+                </div>
+            `));
+        }
+    }
+);
+
+/*
+==================================================
+RÄUME
+==================================================
+*/
+app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res) => {
+    const roomCards = Object.values(rooms).map((room) => {
+        const seatRows = room.seats.map((seat, index) => `
+            <tr>
+                <td>Platz ${index + 1}</td>
+                <td>${escapeHtml(seat.name)}</td>
+                <td>${escapeHtml(seat.title)}</td>
+                <td>
+                    ${
+                        hasPermission(req, 'rooms.clearSeat')
+                            ? `
+                            <form method="POST" action="/admin/clear-seat" class="inline-form">
+                                <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
+                                <input type="hidden" name="seat" value="${index + 1}">
+                                <button type="submit" class="btn-danger">Leeren</button>
+                            </form>
+                            `
+                            : '<span class="muted">Keine Rechte</span>'
+                    }
+                </td>
+            </tr>
+        `).join('');
+
+        return `
+            <div class="card">
+                <h2>${escapeHtml(room.id)} – ${escapeHtml(room.abteilung)} (${escapeHtml(room.roomnumber)})</h2>
+
+                ${
+                    hasPermission(req, 'rooms.edit')
+                        ? `
+                        <form method="POST" action="/admin/update-room">
+                            <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
+
+                            <label>Abteilung</label>
+                            <input type="text" name="abteilung" value="${escapeHtml(room.abteilung)}" required>
+
+                            <label>Raumnummer</label>
+                            <input type="text" name="roomnumber" value="${escapeHtml(room.roomnumber)}" required>
+
+                            <button type="submit">Raum speichern</button>
+                        </form>
+                        `
+                        : `
+                        <p><strong>Abteilung:</strong> ${escapeHtml(room.abteilung)}</p>
+                        <p><strong>Raumnummer:</strong> ${escapeHtml(room.roomnumber)}</p>
+                        `
+                }
+
+                ${
+                    hasPermission(req, 'rooms.delete')
+                        ? `
+                        <form method="POST" action="/admin/delete-room" style="margin-top:16px;">
+                            <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
+                            <button type="submit" class="btn-danger">Raum löschen</button>
+                        </form>
+                        `
+                        : ''
+                }
+
+                <table style="margin-top:20px;">
+                    <thead>
+                        <tr>
+                            <th>Platz</th>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Aktion</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${seatRows}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }).join('');
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Räume verwalten</h1>
+        </div>
+
+        ${
+            hasPermission(req, 'rooms.create')
+                ? `
+                <div class="card">
+                    <h2>Neuen Raum anlegen</h2>
+                    <form method="POST" action="/admin/create-room">
+                        <label>Raum-ID</label>
+                        <input type="text" name="roomId" placeholder="z. B. room3" required>
+
+                        <label>Abteilung</label>
+                        <input type="text" name="abteilung" placeholder="z. B. Vertrieb" required>
+
+                        <label>Raumnummer</label>
+                        <input type="text" name="roomnumber" placeholder="z. B. R.105" required>
+
+                        <button type="submit">Raum erstellen</button>
+                    </form>
+                </div>
+                `
+                : ''
+        }
+
+        ${roomCards || '<div class="card"><p>Keine Räume vorhanden.</p></div>'}
+    `;
+
+    res.send(renderAdminLayout(req, 'Räume', content));
+});
+
+app.post('/admin/create-room', requireAdmin, requirePermission('rooms.create'), (req, res) => {
+    try {
+        const roomId = String(req.body.roomId || '').trim();
+        const abteilung = String(req.body.abteilung || '').trim();
+        const roomnumber = String(req.body.roomnumber || '').trim();
+
+        if (!roomId || !abteilung || !roomnumber) {
+            return res.status(400).send('Fehlende Daten');
+        }
+
+        if (rooms[roomId]) {
+            return res.status(400).send('Raum existiert bereits');
+        }
+
+        rooms[roomId] = {
+            id: roomId,
+            abteilung,
+            roomnumber,
+            seats: [
+                { name: 'Frei', title: '' },
+                { name: 'Frei', title: '' },
+                { name: 'Frei', title: '' },
+                { name: 'Frei', title: '' }
+            ]
+        };
+
+        saveRooms();
+        return res.redirect('/admin/rooms');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Raum konnte nicht gespeichert werden');
+    }
+});
+
+app.post('/admin/update-room', requireAdmin, requirePermission('rooms.edit'), (req, res) => {
+    try {
+        const roomId = String(req.body.roomId || '').trim();
+        const room = getRoom(roomId);
+
+        if (!room) {
+            return res.status(404).send('Raum nicht gefunden');
+        }
+
+        room.abteilung = String(req.body.abteilung || '').trim();
+        room.roomnumber = String(req.body.roomnumber || '').trim();
+
+        saveRooms();
+        return res.redirect('/admin/rooms');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Raum konnte nicht aktualisiert werden');
+    }
+});
+
+app.post('/admin/delete-room', requireAdmin, requirePermission('rooms.delete'), (req, res) => {
+    try {
+        const roomId = String(req.body.roomId || '').trim();
+
+        if (!rooms[roomId]) {
+            return res.status(404).send('Raum nicht gefunden');
+        }
+
+        delete rooms[roomId];
+        saveRooms();
+
+        return res.redirect('/admin/rooms');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Raum konnte nicht gelöscht werden');
+    }
+});
+
+app.post('/admin/clear-seat', requireAdmin, requirePermission('rooms.clearSeat'), (req, res) => {
+    try {
+        const roomId = String(req.body.roomId || '').trim();
+        const seat = Number.parseInt(req.body.seat, 10);
+        const room = getRoom(roomId);
+
+        if (!room || !isValidSeat(seat)) {
+            return res.status(400).send('Ungültige Daten');
+        }
+
+        room.seats[seat - 1] = { name: 'Frei', title: '' };
+        saveRooms();
+
+        return res.redirect('/admin/rooms');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Platz konnte nicht geleert werden');
+    }
+});
+
+/*
+==================================================
+RAUMLINKS / ANSICHTEN
+==================================================
+*/
+app.get('/admin/links', requireAdmin, requirePermission('links.view'), (req, res) => {
+    const roomCards = Object.values(rooms).map((room) => {
+        const seatLinks = room.seats.map((_, index) => {
+            const seatNumber = index + 1;
+            return `
+                <a class="small-link" href="/${encodeURIComponent(room.id)}/sit/${seatNumber}" target="_blank">
+                    Platz ${seatNumber}
+                </a>
+            `;
+        }).join('');
+
+        return `
+            <div class="card">
+                <h2>${escapeHtml(room.abteilung)}</h2>
+                <p><strong>Raum-ID:</strong> ${escapeHtml(room.id)}</p>
+                <p><strong>Raumnummer:</strong> ${escapeHtml(room.roomnumber)}</p>
+
+                <div class="links-row">
+                    <a class="small-link" href="/${encodeURIComponent(room.id)}" target="_blank">Raumansicht öffnen</a>
+                    <a class="small-link" href="/${encodeURIComponent(room.id)}/api/deskview" target="_blank">DeskView API öffnen</a>
+                    <a class="small-link" href="/${encodeURIComponent(room.id)}/api/Komvera" target="_blank">Legacy API öffnen</a>
+                </div>
+
+                <p><strong>Sitzplätze:</strong></p>
+                <div class="links-row">
+                    ${seatLinks}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Raumlinks / Ansichten</h1>
+        </div>
+
+        <div class="grid-2">
+            ${roomCards || '<div class="card"><p>Keine Räume vorhanden.</p></div>'}
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Raumlinks', content));
+});
+
+/*
+==================================================
+ADMINS
+==================================================
+*/
+app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, res) => {
+    const adminRows = admins.map((admin) => `
+        <tr>
+            <td>
+                ${escapeHtml(admin.username)}
+                ${admin.master ? '<span class="badge badge-master">MASTER</span>' : ''}
+            </td>
+            <td>********</td>
+            <td>${formatAdminPermissions(admin)}</td>
+            <td>
+                ${
+                    !admin.master && hasPermission(req, 'admins.edit')
+                        ? `
+                        <form method="GET" action="/admin/admins/edit/${encodeURIComponent(admin.username)}" class="inline-form">
+                            <button type="submit" class="btn-secondary">Bearbeiten</button>
+                        </form>
+                        `
+                        : ''
+                }
+
+                ${
+                    !admin.master && hasPermission(req, 'admins.delete')
+                        ? `
+                        <form method="POST" action="/admin/admins/delete" class="inline-form" style="margin-left:8px;">
+                            <input type="hidden" name="username" value="${escapeHtml(admin.username)}">
+                            <button type="submit" class="btn-danger">Löschen</button>
+                        </form>
+                        `
+                        : ''
+                }
+
+                ${admin.master ? '<span class="muted">Nicht löschbar</span>' : ''}
+            </td>
+        </tr>
+    `).join('');
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Admins verwalten</h1>
+        </div>
+
+        ${
+            hasPermission(req, 'admins.create')
+                ? `
+                <div class="card">
+                    <h2>Neuen Admin anlegen</h2>
+                    <div class="notice">
+                        Es kann nur genau einen Master-Admin geben. Neue Admins werden immer als normale Admins erstellt.
+                    </div>
+                    <form method="POST" action="/admin/admins/create">
+                        <label>Benutzername</label>
+                        <input type="text" name="username" required>
+
+                        <label>Passwort</label>
+                        <input type="password" name="password" required>
+
+                        <label>Berechtigungen</label>
+                        <div class="permission-box">
+                            ${renderPermissionCheckboxes([])}
+                        </div>
+
+                        <button type="submit" style="margin-top:16px;">Admin erstellen</button>
+                    </form>
+                </div>
+                `
+                : ''
+        }
+
+        <div class="card">
+            <h2>Vorhandene Admins</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Benutzername</th>
+                        <th>Passwort</th>
+                        <th>Rechte</th>
+                        <th>Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${adminRows}
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Admins', content));
+});
+
+app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'), async (req, res) => {
+    try {
+        const username = String(req.body.username || '').trim();
+        const password = String(req.body.password || '');
+
+        let permissions = req.body.permissions || [];
+        if (!Array.isArray(permissions)) {
+            permissions = permissions ? [permissions] : [];
+        }
+
+        permissions = permissions.filter(p => AVAILABLE_PERMISSIONS.includes(p));
+
+        if (!username || !password) {
+            return res.status(400).send('Fehlende Daten');
+        }
+
+        if (password.length < 8) {
+            return res.status(400).send('Das Passwort muss mindestens 8 Zeichen lang sein');
+        }
+
+        if (getAdminUser(username)) {
+            return res.status(400).send('Admin existiert bereits');
+        }
+
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+        admins.push(normalizeAdmin({
+            username,
+            passwordHash,
+            master: false,
+            permissions
+        }));
+
+        saveAdmins();
+        return res.redirect('/admin/admins');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Admin konnte nicht erstellt werden');
+    }
+});
+
+app.get('/admin/admins/edit/:username', requireAdmin, requirePermission('admins.edit'), (req, res) => {
+    const username = String(req.params.username || '').trim();
+    const admin = getAdminUser(username);
+
+    if (!admin) {
+        return res.status(404).send('Admin nicht gefunden');
+    }
+
+    if (admin.master) {
+        return res.status(400).send('Master-Admin kann nicht bearbeitet werden');
+    }
+
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Admin bearbeiten</h1>
+        </div>
+
+        <div class="card">
+            <h2>${escapeHtml(admin.username)}</h2>
+            <form method="POST" action="/admin/admins/edit">
+                <input type="hidden" name="username" value="${escapeHtml(admin.username)}">
+
+                <label>Neues Passwort</label>
+                <input type="password" name="password" placeholder="Leer lassen = unverändert">
+
+                <label>Berechtigungen</label>
+                <div class="permission-box">
+                    ${renderPermissionCheckboxes(admin.permissions)}
+                </div>
+
+                <button type="submit" style="margin-top:16px;">Änderungen speichern</button>
+            </form>
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Admin bearbeiten', content));
+});
+
+app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), async (req, res) => {
+    try {
+        const username = String(req.body.username || '').trim();
+        const admin = getAdminUser(username);
+
+        if (!admin) {
+            return res.status(404).send('Admin nicht gefunden');
+        }
+
+        if (admin.master) {
+            return res.status(400).send('Master-Admin kann nicht bearbeitet werden');
+        }
+
+        const password = String(req.body.password || '');
+
+        let permissions = req.body.permissions || [];
+        if (!Array.isArray(permissions)) {
+            permissions = permissions ? [permissions] : [];
+        }
+
+        permissions = permissions.filter(p => AVAILABLE_PERMISSIONS.includes(p));
+
+        admin.permissions = permissions;
+
+        if (password.trim()) {
+            if (password.length < 8) {
+                return res.status(400).send('Das neue Passwort muss mindestens 8 Zeichen lang sein');
+            }
+            admin.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        }
+
+        saveAdmins();
+        return res.redirect('/admin/admins');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Admin konnte nicht bearbeitet werden');
+    }
+});
+
+app.post('/admin/admins/delete', requireAdmin, requirePermission('admins.delete'), (req, res) => {
+    try {
+        const username = String(req.body.username || '').trim();
+        const admin = getAdminUser(username);
+
+        if (!admin) {
+            return res.status(404).send('Admin nicht gefunden');
+        }
+
+        if (admin.master) {
+            return res.status(400).send('Master-Admin kann nicht gelöscht werden');
+        }
+
+        admins = admins.filter(a => a.username !== username);
+        saveAdmins();
+
+        return res.redirect('/admin/admins');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Admin konnte nicht gelöscht werden');
+    }
+});
+
+/*
+==================================================
+MICROSOFT
+==================================================
+*/
+app.get('/admin/microsoft', requireAdmin, requirePermission('microsoft.view'), (req, res) => {
+    const content = `
+        <div class="topbar">
+            <h1 class="page-title">Microsoft Konfiguration</h1>
+        </div>
+
+        <div class="card">
+            <h2>Entra / Azure AD Daten</h2>
+
+            ${
+                hasPermission(req, 'microsoft.edit')
+                    ? `
+                    <form method="POST" action="/admin/microsoft/update">
+                        <label>Client ID</label>
+                        <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}" required>
+
+                        <label>Tenant ID</label>
+                        <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}" required>
+
+                        <label>Client Secret</label>
+                        <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}" required>
+
+                        <label>Callback URL</label>
+                        <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}" required>
+
+                        <button type="submit">Microsoft Konfiguration speichern</button>
+                    </form>
+                    `
+                    : `
+                    <p><strong>Client ID:</strong><br>${escapeHtml(microsoftConfig.clientID || '')}</p>
+                    <p><strong>Tenant ID:</strong><br>${escapeHtml(microsoftConfig.tenantID || '')}</p>
+                    <p><strong>Client Secret:</strong><br>********</p>
+                    <p><strong>Callback URL:</strong><br>${escapeHtml(microsoftConfig.callbackURL || '')}</p>
+                    `
+            }
+        </div>
+    `;
+
+    res.send(renderAdminLayout(req, 'Microsoft', content));
+});
+
+app.post('/admin/microsoft/update', requireAdmin, requirePermission('microsoft.edit'), (req, res) => {
+    try {
+        const clientID = String(req.body.clientID || '').trim();
+        const tenantID = String(req.body.tenantID || '').trim();
+        const clientSecret = String(req.body.clientSecret || '').trim();
+        const callbackURL = String(req.body.callbackURL || '').trim();
+
+        if (!clientID || !tenantID || !clientSecret || !callbackURL) {
+            return res.status(400).send('Fehlende Daten');
+        }
+
+        microsoftConfig = {
+            clientID,
+            tenantID,
+            clientSecret,
+            callbackURL
+        };
+
+        saveMicrosoftConfig();
+        configurePassportStrategy();
+
+        return res.redirect('/admin/microsoft');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Microsoft Konfiguration konnte nicht gespeichert werden');
+    }
+});
+
+/*
+==================================================
+DESKVIEW API
+==================================================
+*/
+app.get('/:room/api/deskview', (req, res) => {
+    const room = getRoom(req.params.room);
+
+    if (!room) {
+        return res.status(404).json({ error: 'Raum nicht gefunden' });
+    }
+
+    return res.json(renderRoomApiJson(room));
+});
+
+/*
+==================================================
+LEGACY KOMPATIBILITÄT
+==================================================
+*/
+app.get('/:room/api/Komvera', (req, res) => {
+    const room = getRoom(req.params.room);
+
+    if (!room) {
+        return res.status(404).json({ error: 'Raum nicht gefunden' });
+    }
+
+    return res.json(renderRoomApiJson(room));
+});
+
+/*
+==================================================
+QR / ROOM
+==================================================
+*/
+app.get('/:room', (req, res) => {
+    const roomId = req.params.room;
+    const room = getRoom(roomId);
+
+    if (!room) {
+        return res.status(404).send('Raum nicht gefunden');
+    }
+
+    const seatButtons = room.seats.map((seat, index) => {
+        const seatNumber = index + 1;
+        const occupied = seat.name && seat.name !== 'Frei';
+
+        return `
+            <a class="seat-card ${occupied ? 'occupied' : ''}" href="/${escapeHtml(roomId)}/sit/${seatNumber}">
+                <div class="seat-number">Platz ${seatNumber}</div>
+                <div class="seat-status">
+                    ${occupied ? `Belegt<br><strong>${escapeHtml(seat.name)}</strong>` : 'Frei'}
+                </div>
+            </a>
+        `;
+    }).join('');
+
+    res.send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>${escapeHtml(room.abteilung)} - Sitzplatz wählen</title>
+            <style>
+                * {
+                    box-sizing: border-box;
+                }
+                body {
+                    margin: 0;
+                    min-height: 100vh;
+                    font-family: Arial, sans-serif;
+                    background: linear-gradient(180deg, #f4f4f4 0%, #e9e9e9 100%);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 24px;
+                }
+                .card {
+                    width: 100%;
+                    max-width: 760px;
+                    background: #ffffff;
+                    border-radius: 20px;
+                    padding: 36px 30px;
+                    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.12);
+                    text-align: center;
+                }
+                .logo {
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    margin-bottom: 30px;
+                }
+                .logo img {
+                    max-width: 320px;
+                    width: 100%;
+                    height: auto;
+                    object-fit: contain;
+                }
+                h1 {
+                    margin: 0;
+                    font-size: 40px;
+                    color: #111;
+                }
+                .meta {
+                    margin-top: 12px;
+                    font-size: 24px;
+                    color: #555;
+                }
+                .hint {
+                    margin: 26px 0 28px 0;
+                    font-size: 18px;
+                    color: #666;
+                }
+                .grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 18px;
+                }
+                .seat-card {
+                    display: block;
+                    text-decoration: none;
+                    background: #f7f7f7;
+                    border: 2px solid #e3e3e3;
+                    border-radius: 16px;
+                    padding: 24px 18px;
+                    color: #111;
+                    transition: 0.15s ease;
+                }
+                .seat-card:hover {
+                    transform: translateY(-2px);
+                    border-color: #0078d4;
+                    box-shadow: 0 10px 24px rgba(0, 120, 212, 0.12);
+                }
+                .seat-card.occupied {
+                    background: #fff7f7;
+                    border-color: #f0caca;
+                }
+                .seat-number {
+                    font-size: 28px;
+                    font-weight: 700;
+                    margin-bottom: 10px;
+                }
+                .seat-status {
+                    font-size: 17px;
+                    color: #555;
+                    line-height: 1.4;
+                }
+                .support-footer {
+                    margin-top: 24px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #888;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+                .support-footer-text {
+                    margin-bottom: 8px;
+                }
+                @media (max-width: 700px) {
+                    .card {
+                        padding: 28px 20px;
+                    }
+                    h1 {
+                        font-size: 32px;
+                    }
+                    .meta {
+                        font-size: 20px;
+                    }
+                    .grid {
+                        grid-template-columns: 1fr;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="logo">
+                    <img src="/logo.png" alt="Logo">
+                </div>
+
+                <h1>${escapeHtml(room.abteilung)}</h1>
+                <div class="meta">Raum ${escapeHtml(room.roomnumber)}</div>
+                <div class="hint">Bitte den Sitzplatz auswählen.</div>
+
+                <div class="grid">
+                    ${seatButtons}
+                </div>
+
+                ${renderSupportFooter('Nach der Auswahl folgt die Anmeldung mit Microsoft.')}
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+/*
+==================================================
+QR / SIT
+==================================================
+*/
+app.get('/:room/sit/:seat', (req, res) => {
+    const roomId = req.params.room;
+    const seat = Number.parseInt(req.params.seat, 10);
+    const room = getRoom(roomId);
+
+    if (!room) {
+        return res.status(404).send('Raum nicht gefunden');
+    }
+
+    if (!isValidSeat(seat)) {
+        return res.status(400).send('Ungültiger Platz');
+    }
+
+    req.session.pendingRoom = roomId;
+    req.session.pendingSeat = seat;
+
+    req.session.save((err) => {
+        if (err) {
+            console.error('Session save error:', err);
+            return res.status(500).send('Session konnte nicht gespeichert werden.');
+        }
+
+        res.send(`
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(room.abteilung)} - Platz ${seat}</title>
+<style>
+* {
+    box-sizing: border-box;
+}
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: Arial, sans-serif;
+    background: linear-gradient(180deg, #f4f4f4 0%, #e9e9e9 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.card {
+    width: 100%;
+    max-width: 520px;
+    background: #ffffff;
+    border-radius: 20px;
+    padding: 40px 30px;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.12);
+    text-align: center;
+}
+.logo {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 25px;
+}
+.logo img {
+    max-width: 260px;
+    width: 100%;
+    height: auto;
+}
+h1 {
+    margin: 0;
+    font-size: 40px;
+    color: #111;
+}
+.meta {
+    margin-top: 14px;
+    font-size: 22px;
+    color: #555;
+}
+.seat {
+    font-weight: bold;
+    font-size: 26px;
+    display: block;
+    margin-top: 6px;
+}
+.btn-wrapper {
+    margin-top: 30px;
+    display: flex;
+    justify-content: center;
+}
+.btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 340px;
+    padding: 16px;
+    background: #0078d4;
+    color: white;
+    text-decoration: none;
+    border-radius: 10px;
+    font-weight: bold;
+    font-size: 18px;
+    transition: 0.2s ease;
+}
+.btn:hover {
+    background: #0062ad;
+}
+.support-footer {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid #e5e7eb;
+    text-align: center;
+    font-size: 14px;
+    color: #777;
+}
+.support-footer a {
+    color: #2563eb;
+    text-decoration: none;
+}
+.support-footer a:hover {
+    text-decoration: underline;
+}
+.support-footer-text {
+    margin-bottom: 8px;
+}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <img src="/logo.png" alt="Logo">
+    </div>
+
+    <h1>${escapeHtml(room.abteilung)}</h1>
+
+    <div class="meta">
+        Raum ${escapeHtml(room.roomnumber)}
+        <span class="seat">Platz ${seat}</span>
+    </div>
+
+    <div class="btn-wrapper">
+        <a class="btn" href="/auth/login">Mit Microsoft anmelden</a>
+    </div>
+
+    ${renderSupportFooter('Nach dem Login wird der Platz automatisch eingetragen.')}
+</div>
+</body>
+</html>
+        `);
+    });
+});
+
+/*
+==================================================
+MICROSOFT LOGIN
+==================================================
+*/
+app.get('/auth/login', (req, res, next) => {
+    if (!hasMicrosoftConfig()) {
+        return res.status(500).send('Microsoft / Entra ist noch nicht konfiguriert.');
+    }
+
+    return passport.authenticate('azuread-openidconnect')(req, res, next);
+});
+
+app.get(
+    '/auth/callback',
+    (req, res, next) => {
+        if (!hasMicrosoftConfig()) {
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Microsoft / Entra ist nicht konfiguriert.'));
+        }
+
+        return passport.authenticate('azuread-openidconnect', {
+            failureRedirect: '/auth/error?msg=' + encodeURIComponent('Microsoft Auth fehlgeschlagen')
+        })(req, res, next);
+    },
+    (req, res) => {
+        try {
+            if (!req.user) {
+                return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein Benutzer von Microsoft zurückgegeben.'));
+            }
+
+            const roomId = req.user.pendingRoom;
+            const seat = Number.parseInt(req.user.pendingSeat, 10);
+            const room = getRoom(roomId);
+
+            if (!room) {
+                return res.redirect('/auth/error?msg=' + encodeURIComponent('Raum nicht gefunden.'));
+            }
+
+            if (!isValidSeat(seat)) {
+                return res.redirect('/auth/error?msg=' + encodeURIComponent('Platz ungültig.'));
+            }
+
+            const fullName =
+                req.user.displayName ||
+                `${req.user.givenName || ''} ${req.user.surname || ''}`.trim() ||
+                'Unbekannt';
+
+            const jobTitle = req.user.jobTitle || 'Mitarbeiter';
+
+            room.seats[seat - 1] = {
+                name: fullName,
+                title: jobTitle
+            };
+
+            saveRooms();
+
+            delete req.session.pendingRoom;
+            delete req.session.pendingSeat;
+
+            return res.send(`
+                <html lang="de">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>Erfolgreich eingetragen</title>
+                    <style>
+                        body {
+                            font-family: Arial, sans-serif;
+                            text-align: center;
+                            padding-top: 60px;
+                        }
+                        .support-footer {
+                            margin-top: 30px;
+                            padding-top: 18px;
+                            border-top: 1px solid #e5e7eb;
+                            text-align: center;
+                            font-size: 14px;
+                            color: #6b7280;
+                        }
+                        .support-footer a {
+                            color: #2563eb;
+                            text-decoration: none;
+                        }
+                        .support-footer a:hover {
+                            text-decoration: underline;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <h2>Erfolgreich eingetragen</h2>
+                    <p><strong>${escapeHtml(fullName)}</strong> sitzt jetzt auf Platz ${seat}.</p>
+                    <p>Status: ${escapeHtml(jobTitle)}</p>
+                    ${renderSupportFooter()}
+                </body>
+                </html>
+            `);
+        } catch (err) {
+            console.error('Fehler im Callback:', err);
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Benutzer konnte nicht gespeichert werden.'));
+        }
+    }
+);
+
+app.get('/auth/error', (req, res) => {
+    const msg = req.query.msg ? String(req.query.msg) : 'Unbekannter Fehler';
+
+    res.status(500).send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <title>Login Fehler</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding-top: 60px;
+                }
+                .support-footer {
+                    margin-top: 30px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #6b7280;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+            </style>
+        </head>
+        <body>
+            <h2>Microsoft Login fehlgeschlagen</h2>
+            <p>${escapeHtml(msg)}</p>
+            ${renderSupportFooter()}
+        </body>
+        </html>
+    `);
+});
+
+/*
+==================================================
+FEHLER
+==================================================
+*/
+app.use((err, req, res, next) => {
+    console.error('Fehler:', err);
+    res.status(500).send(`
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <title>Serverfehler</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding-top: 60px;
+                }
+                .support-footer {
+                    margin-top: 30px;
+                    padding-top: 18px;
+                    border-top: 1px solid #e5e7eb;
+                    text-align: center;
+                    font-size: 14px;
+                    color: #6b7280;
+                }
+                .support-footer a {
+                    color: #2563eb;
+                    text-decoration: none;
+                }
+                .support-footer a:hover {
+                    text-decoration: underline;
+                }
+            </style>
+        </head>
+        <body>
+            <h2>Interner Serverfehler</h2>
+            <p>${escapeHtml(err.message || 'Unbekannter Fehler')}</p>
+            ${renderSupportFooter()}
+        </body>
+        </html>
+    `);
+});
+
+/*
+==================================================
+START
+==================================================
+*/
+(async () => {
+    try {
+        ensureSingleMasterAdmin();
+        ensurePublicDir();
+
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log('Server läuft auf http://0.0.0.0:' + PORT);
+            console.log('Beim ersten Start werden fehlende JSON-Dateien automatisch erstellt.');
+        });
+    } catch (err) {
+        console.error('Serverstart fehlgeschlagen:', err);
+        process.exit(1);
+    }
+})();
