@@ -1168,7 +1168,7 @@ app.get('/', (req, res) => {
         const freeCount = room.seats.filter(s => !s.name || s.name === 'Frei').length;
 
         return `
-            <a href="/${encodeURIComponent(room.id)}" class="room-card">
+            <div class="room-card">
                 <div class="room-card-header">
                     <div>
                         <div class="room-card-name">${escapeHtml(room.abteilung)}</div>
@@ -1179,7 +1179,8 @@ app.get('/', (req, res) => {
                 <div class="room-seats">
                     ${seatLinks}
                 </div>
-            </a>
+                <a href="/${encodeURIComponent(room.id)}" class="room-card-link">Raum öffnen &#8594;</a>
+            </div>
         `;
     }).join('');
 
@@ -1328,14 +1329,28 @@ app.get('/', (req, res) => {
                     border-radius: 16px;
                     overflow: hidden;
                     box-shadow: var(--card-shadow);
-                    text-decoration: none;
                     color: var(--text);
-                    display: block;
+                    display: flex;
+                    flex-direction: column;
                     transition: transform 0.15s, box-shadow 0.15s;
                 }
                 .room-card:hover {
                     transform: translateY(-3px);
                     box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+                }
+                .room-card-link {
+                    display: block;
+                    padding: 12px 20px;
+                    text-align: center;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: var(--primary);
+                    text-decoration: none;
+                    border-top: 1px solid var(--border);
+                    transition: background 0.15s;
+                }
+                .room-card-link:hover {
+                    background: var(--room-header);
                 }
                 .room-card-header {
                     display: flex;
@@ -1381,7 +1396,10 @@ app.get('/', (req, res) => {
                     color: var(--pill-free-text);
                     border: 1px solid transparent;
                     transition: opacity 0.15s, transform 0.1s;
-                    pointer-events: none;
+                }
+                .seat-pill:hover {
+                    opacity: 0.85;
+                    transform: translateX(3px);
                 }
                 .seat-pill.seat-pill-occ {
                     background: var(--pill-occ);
@@ -2920,146 +2938,224 @@ app.get('/:room', (req, res) => {
         `;
     }).join('');
 
+    const logoExists = fs.existsSync(LOGO_FILE);
     res.send(`
+        <!DOCTYPE html>
         <html lang="de">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>${escapeHtml(room.abteilung)} - Sitzplatz wählen</title>
+            <title>${escapeHtml(room.abteilung)} – Sitzplatz wählen</title>
             <style>
-                * {
-                    box-sizing: border-box;
+                * { box-sizing: border-box; margin: 0; padding: 0; }
+                :root {
+                    --bg: #f0f4f8;
+                    --surface: #ffffff;
+                    --text: #1e293b;
+                    --muted: #64748b;
+                    --border: #e2e8f0;
+                    --primary: #2563eb;
+                    --primary-hover: #1d4ed8;
+                    --card-shadow: 0 4px 24px rgba(0,0,0,0.08);
+                    --header-bg: #ffffff;
+                    --seat-free-bg: #f0fdf4;
+                    --seat-free-border: #bbf7d0;
+                    --seat-free-text: #166534;
+                    --seat-occ-bg: #fff1f2;
+                    --seat-occ-border: #fecdd3;
+                    --seat-occ-text: #9f1239;
+                }
+                [data-theme="dark"] {
+                    --bg: #0f172a;
+                    --surface: #1e293b;
+                    --text: #f1f5f9;
+                    --muted: #94a3b8;
+                    --border: #334155;
+                    --primary: #3b82f6;
+                    --primary-hover: #2563eb;
+                    --card-shadow: 0 4px 24px rgba(0,0,0,0.4);
+                    --header-bg: #1e293b;
+                    --seat-free-bg: #14532d;
+                    --seat-free-border: #166534;
+                    --seat-free-text: #86efac;
+                    --seat-occ-bg: #450a0a;
+                    --seat-occ-border: #991b1b;
+                    --seat-occ-text: #fca5a5;
                 }
                 body {
-                    margin: 0;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                    background: var(--bg);
+                    color: var(--text);
                     min-height: 100vh;
-                    font-family: Arial, sans-serif;
-                    background: linear-gradient(180deg, #f4f4f4 0%, #e9e9e9 100%);
+                    display: flex;
+                    flex-direction: column;
+                    transition: background 0.2s, color 0.2s;
+                }
+                header {
+                    background: var(--header-bg);
+                    border-bottom: 1px solid var(--border);
+                    padding: 0 32px;
+                    height: 64px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    position: sticky;
+                    top: 0;
+                    z-index: 100;
+                    box-shadow: 0 1px 8px rgba(0,0,0,0.05);
+                }
+                .header-logo { max-height: 38px; max-width: 160px; width: auto; height: auto; object-fit: contain; }
+                .header-logo-text { font-size: 18px; font-weight: 700; color: var(--text); }
+                .header-right { display: flex; align-items: center; gap: 10px; }
+                .btn-theme {
+                    background: none;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    padding: 7px 12px;
+                    cursor: pointer;
+                    color: var(--muted);
+                    font-size: 13px;
+                    transition: border-color 0.15s;
+                }
+                .btn-theme:hover { border-color: var(--primary); color: var(--primary); }
+                .btn-admin {
+                    background: var(--primary);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 8px 16px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    text-decoration: none;
+                    transition: background 0.15s;
+                }
+                .btn-admin:hover { background: var(--primary-hover); }
+                .content {
+                    flex: 1;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    padding: 24px;
+                    padding: 40px 24px;
                 }
                 .card {
                     width: 100%;
-                    max-width: 760px;
-                    background: #ffffff;
+                    max-width: 680px;
+                    background: var(--surface);
                     border-radius: 20px;
-                    padding: 36px 30px;
-                    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.12);
+                    padding: 40px 36px;
+                    box-shadow: var(--card-shadow);
+                    border: 1px solid var(--border);
                     text-align: center;
                 }
-                .logo {
-                    display: flex;
-                    justify-content: center;
+                .card-logo { margin-bottom: 28px; }
+                .card-logo img { max-height: 52px; max-width: 200px; width: auto; height: auto; object-fit: contain; }
+                .back-link {
+                    display: inline-flex;
                     align-items: center;
-                    margin-bottom: 30px;
+                    gap: 6px;
+                    font-size: 13px;
+                    color: var(--muted);
+                    text-decoration: none;
+                    margin-bottom: 24px;
+                    transition: color 0.15s;
                 }
-                .logo img {
-                    max-width: 320px;
-                    width: 100%;
-                    height: auto;
-                    object-fit: contain;
-                }
-                h1 {
-                    margin: 0;
-                    font-size: 40px;
-                    color: #111;
-                }
-                .meta {
-                    margin-top: 12px;
-                    font-size: 24px;
-                    color: #555;
-                }
-                .hint {
-                    margin: 26px 0 28px 0;
-                    font-size: 18px;
-                    color: #666;
-                }
+                .back-link:hover { color: var(--primary); }
+                h1 { font-size: 32px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+                .room-num { font-size: 16px; color: var(--muted); margin-bottom: 28px; }
+                .hint { font-size: 15px; color: var(--muted); margin-bottom: 24px; }
                 .grid {
                     display: grid;
                     grid-template-columns: repeat(2, 1fr);
-                    gap: 18px;
+                    gap: 14px;
                 }
                 .seat-card {
                     display: block;
                     text-decoration: none;
-                    background: #f7f7f7;
-                    border: 2px solid #e3e3e3;
-                    border-radius: 16px;
-                    padding: 24px 18px;
-                    color: #111;
-                    transition: 0.15s ease;
+                    background: var(--seat-free-bg);
+                    border: 2px solid var(--seat-free-border);
+                    border-radius: 14px;
+                    padding: 20px 16px;
+                    color: var(--seat-free-text);
+                    transition: transform 0.15s, box-shadow 0.15s;
+                    text-align: center;
                 }
                 .seat-card:hover {
                     transform: translateY(-2px);
-                    border-color: #0078d4;
-                    box-shadow: 0 10px 24px rgba(0, 120, 212, 0.12);
+                    box-shadow: 0 8px 20px rgba(0,0,0,0.12);
                 }
                 .seat-card.occupied {
-                    background: #fff7f7;
-                    border-color: #f0caca;
+                    background: var(--seat-occ-bg);
+                    border-color: var(--seat-occ-border);
+                    color: var(--seat-occ-text);
                 }
-                .seat-number {
-                    font-size: 28px;
-                    font-weight: 700;
-                    margin-bottom: 10px;
-                }
-                .seat-status {
-                    font-size: 17px;
-                    color: #555;
-                    line-height: 1.4;
-                }
-                .support-footer {
-                    margin-top: 24px;
-                    padding-top: 18px;
-                    border-top: 1px solid #e5e7eb;
+                .seat-number { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+                .seat-status { font-size: 14px; line-height: 1.5; }
+                footer {
                     text-align: center;
-                    font-size: 14px;
-                    color: #888;
+                    padding: 20px;
+                    font-size: 13px;
+                    color: var(--muted);
+                    border-top: 1px solid var(--border);
                 }
-                .support-footer a {
-                    color: #2563eb;
-                    text-decoration: none;
-                }
-                .support-footer a:hover {
-                    text-decoration: underline;
-                }
-                .support-footer-text {
-                    margin-bottom: 8px;
-                }
-                @media (max-width: 700px) {
-                    .card {
-                        padding: 28px 20px;
-                    }
-                    h1 {
-                        font-size: 32px;
-                    }
-                    .meta {
-                        font-size: 20px;
-                    }
-                    .grid {
-                        grid-template-columns: 1fr;
-                    }
+                footer a { color: var(--primary); text-decoration: none; }
+                footer a:hover { text-decoration: underline; }
+                @media (max-width: 600px) {
+                    header { padding: 0 16px; }
+                    .card { padding: 28px 20px; }
+                    h1 { font-size: 26px; }
+                    .grid { grid-template-columns: 1fr; }
                 }
             </style>
+            <script>
+                (function() {
+                    var saved = localStorage.getItem('deskview-theme') || 'light';
+                    document.documentElement.setAttribute('data-theme', saved);
+                })();
+            </script>
         </head>
         <body>
-            <div class="card">
-                <div class="logo">
-                    <img src="/logo.png" alt="Logo">
+            <header>
+                <div>
+                    ${logoExists
+                        ? `<img src="/logo.png" alt="Logo" class="header-logo">`
+                        : `<span class="header-logo-text">Komvera DeskView</span>`
+                    }
                 </div>
-
-                <h1>${escapeHtml(room.abteilung)}</h1>
-                <div class="meta">Raum ${escapeHtml(room.roomnumber)}</div>
-                <div class="hint">Bitte den Sitzplatz auswählen.</div>
-
-                <div class="grid">
-                    ${seatButtons}
+                <div class="header-right">
+                    <button class="btn-theme" onclick="toggleTheme()">&#9790; Modus</button>
+                    <a href="/admin" class="btn-admin">&#9632; Admin</a>
                 </div>
+            </header>
 
-                ${renderSupportFooter('Nach der Auswahl folgt die Anmeldung mit Microsoft.')}
+            <div class="content">
+                <div class="card">
+                    ${logoExists ? `<div class="card-logo"><img src="/logo.png" alt="Logo"></div>` : ''}
+                    <a href="/" class="back-link">&#8592; Zur Übersicht</a>
+                    <h1>${escapeHtml(room.abteilung)}</h1>
+                    <div class="room-num">Raum ${escapeHtml(room.roomnumber)}</div>
+                    <div class="hint">Bitte den Sitzplatz auswählen.</div>
+
+                    <div class="grid">
+                        ${seatButtons}
+                    </div>
+                </div>
             </div>
+
+            <footer>
+                &copy; ${new Date().getFullYear()} Komvera IT GmbH &middot;
+                <a href="https://www.komvera.de" target="_blank" rel="noopener noreferrer">www.komvera.de</a> &middot;
+                <a href="mailto:info@komvera.de">info@komvera.de</a>
+            </footer>
+
+            <script>
+                function toggleTheme() {
+                    var current = document.documentElement.getAttribute('data-theme');
+                    var next = current === 'dark' ? 'light' : 'dark';
+                    document.documentElement.setAttribute('data-theme', next);
+                    localStorage.setItem('deskview-theme', next);
+                }
+            </script>
         </body>
         </html>
     `);
@@ -3092,124 +3188,227 @@ app.get('/:room/sit/:seat', (req, res) => {
             return res.status(500).send('Session konnte nicht gespeichert werden.');
         }
 
+        const logoExists = fs.existsSync(LOGO_FILE);
         res.send(`
 <!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${escapeHtml(room.abteilung)} - Platz ${seat}</title>
+<title>${escapeHtml(room.abteilung)} – Platz ${seat}</title>
 <style>
-* {
-    box-sizing: border-box;
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+    --bg: #f0f4f8;
+    --surface: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --primary: #0078d4;
+    --primary-hover: #0062ad;
+    --btn-admin: #2563eb;
+    --btn-admin-hover: #1d4ed8;
+    --card-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    --header-bg: #ffffff;
+    --badge-bg: #eff6ff;
+    --badge-text: #1d4ed8;
+}
+[data-theme="dark"] {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --border: #334155;
+    --primary: #38bdf8;
+    --primary-hover: #0ea5e9;
+    --card-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    --header-bg: #1e293b;
+    --badge-bg: #1e3a5f;
+    --badge-text: #93c5fd;
 }
 body {
-    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
     min-height: 100vh;
-    font-family: Arial, sans-serif;
-    background: linear-gradient(180deg, #f4f4f4 0%, #e9e9e9 100%);
+    display: flex;
+    flex-direction: column;
+    transition: background 0.2s, color 0.2s;
+}
+header {
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 1px 8px rgba(0,0,0,0.05);
+}
+.header-logo { max-height: 38px; max-width: 160px; width: auto; height: auto; object-fit: contain; }
+.header-logo-text { font-size: 18px; font-weight: 700; color: var(--text); }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.btn-theme {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 12px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+    transition: border-color 0.15s;
+}
+.btn-theme:hover { border-color: var(--btn-admin); color: var(--btn-admin); }
+.btn-admin {
+    background: var(--btn-admin);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s;
+}
+.btn-admin:hover { background: var(--btn-admin-hover); }
+.content {
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: 40px 24px;
 }
 .card {
     width: 100%;
-    max-width: 520px;
-    background: #ffffff;
+    max-width: 480px;
+    background: var(--surface);
     border-radius: 20px;
-    padding: 40px 30px;
-    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.12);
+    padding: 40px 36px;
+    box-shadow: var(--card-shadow);
+    border: 1px solid var(--border);
     text-align: center;
 }
-.logo {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 25px;
+.card-logo { margin-bottom: 24px; }
+.card-logo img { max-height: 48px; max-width: 180px; width: auto; height: auto; object-fit: contain; }
+.back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+    text-decoration: none;
+    margin-bottom: 20px;
+    transition: color 0.15s;
 }
-.logo img {
-    max-width: 260px;
-    width: 100%;
-    height: auto;
+.back-link:hover { color: var(--btn-admin); }
+.room-name { font-size: 28px; font-weight: 800; margin-bottom: 6px; }
+.room-info { font-size: 15px; color: var(--muted); margin-bottom: 16px; }
+.seat-badge {
+    display: inline-block;
+    background: var(--badge-bg);
+    color: var(--badge-text);
+    font-size: 18px;
+    font-weight: 700;
+    padding: 8px 20px;
+    border-radius: 999px;
+    margin-bottom: 28px;
 }
-h1 {
-    margin: 0;
-    font-size: 40px;
-    color: #111;
-}
-.meta {
-    margin-top: 14px;
-    font-size: 22px;
-    color: #555;
-}
-.seat {
-    font-weight: bold;
-    font-size: 26px;
-    display: block;
-    margin-top: 6px;
-}
-.btn-wrapper {
-    margin-top: 30px;
-    display: flex;
-    justify-content: center;
-}
-.btn {
+.ms-btn {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 10px;
     width: 100%;
-    max-width: 340px;
     padding: 16px;
-    background: #0078d4;
+    background: var(--primary);
     color: white;
     text-decoration: none;
-    border-radius: 10px;
-    font-weight: bold;
-    font-size: 18px;
-    transition: 0.2s ease;
+    border-radius: 12px;
+    font-weight: 700;
+    font-size: 16px;
+    transition: background 0.2s, transform 0.1s;
 }
-.btn:hover {
-    background: #0062ad;
+.ms-btn:hover {
+    background: var(--primary-hover);
+    transform: translateY(-1px);
 }
-.support-footer {
-    margin-top: 18px;
-    padding-top: 18px;
-    border-top: 1px solid #e5e7eb;
+.ms-btn svg { flex-shrink: 0; }
+.hint-text { font-size: 13px; color: var(--muted); margin-top: 14px; }
+footer {
     text-align: center;
-    font-size: 14px;
-    color: #777;
+    padding: 20px;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
 }
-.support-footer a {
-    color: #2563eb;
-    text-decoration: none;
-}
-.support-footer a:hover {
-    text-decoration: underline;
-}
-.support-footer-text {
-    margin-bottom: 8px;
+footer a { color: var(--btn-admin); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+@media (max-width: 600px) {
+    header { padding: 0 16px; }
+    .card { padding: 28px 20px; }
+    .room-name { font-size: 22px; }
 }
 </style>
+<script>
+    (function() {
+        var saved = localStorage.getItem('deskview-theme') || 'light';
+        document.documentElement.setAttribute('data-theme', saved);
+    })();
+</script>
 </head>
 <body>
-<div class="card">
-    <div class="logo">
-        <img src="/logo.png" alt="Logo">
+<header>
+    <div>
+        ${logoExists
+            ? `<img src="/logo.png" alt="Logo" class="header-logo">`
+            : `<span class="header-logo-text">Komvera DeskView</span>`
+        }
     </div>
-
-    <h1>${escapeHtml(room.abteilung)}</h1>
-
-    <div class="meta">
-        Raum ${escapeHtml(room.roomnumber)}
-        <span class="seat">Platz ${seat}</span>
+    <div class="header-right">
+        <button class="btn-theme" onclick="toggleTheme()">&#9790; Modus</button>
+        <a href="/admin" class="btn-admin">&#9632; Admin</a>
     </div>
+</header>
 
-    <div class="btn-wrapper">
-        <a class="btn" href="/auth/login">Mit Microsoft anmelden</a>
+<div class="content">
+    <div class="card">
+        ${logoExists ? `<div class="card-logo"><img src="/logo.png" alt="Logo"></div>` : ''}
+        <a href="/${encodeURIComponent(roomId)}" class="back-link">&#8592; Zurück zur Raumauswahl</a>
+        <div class="room-name">${escapeHtml(room.abteilung)}</div>
+        <div class="room-info">Raum ${escapeHtml(room.roomnumber)}</div>
+        <div class="seat-badge">Platz ${seat}</div>
+
+        <a class="ms-btn" href="/auth/login">
+            <svg width="20" height="20" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+                <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+                <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+                <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+            </svg>
+            Mit Microsoft anmelden
+        </a>
+        <div class="hint-text">Nach dem Login wird der Platz automatisch eingetragen.</div>
     </div>
-
-    ${renderSupportFooter('Nach dem Login wird der Platz automatisch eingetragen.')}
 </div>
+
+<footer>
+    &copy; ${new Date().getFullYear()} Komvera IT GmbH &middot;
+    <a href="https://www.komvera.de" target="_blank" rel="noopener noreferrer">www.komvera.de</a> &middot;
+    <a href="mailto:info@komvera.de">info@komvera.de</a>
+</footer>
+
+<script>
+    function toggleTheme() {
+        var current = document.documentElement.getAttribute('data-theme');
+        var next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('deskview-theme', next);
+    }
+</script>
 </body>
 </html>
         `);
