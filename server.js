@@ -424,8 +424,8 @@ function csrfField(req) {
 }
 
 function requireCsrf(req, res, next) {
-    const token = String(req.body._csrf || '');
-    if (!token || token !== req.session.csrfToken) {
+    const token = String(req.body._csrf || req.query._csrf || '');
+    if (!token || !req.session.csrfToken || token !== req.session.csrfToken) {
         return res.status(403).send('Ungültige Anfrage (CSRF-Fehler). Bitte Seite neu laden.');
     }
     next();
@@ -1560,7 +1560,7 @@ function buildSessionMiddleware() {
     return session({
         secret: String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret,
         resave: false,
-        saveUninitialized: false,
+        saveUninitialized: true,
         cookie: {
             httpOnly: true,
             sameSite: 'lax',
@@ -3027,8 +3027,7 @@ app.get('/admin/logo', requireAdmin, requirePermission('system.logo'), (req, res
                 Das hochgeladene Bild wird automatisch als <strong>logo.png</strong> gespeichert und das alte Logo ersetzt.
             </div>
 
-            <form method="POST" action="/admin/logo/upload" enctype="multipart/form-data">
-                ${csrfField(req)}
+            <form method="POST" action="/admin/logo/upload?_csrf=${getCsrfToken(req)}" enctype="multipart/form-data">
                 <label>Neues Logo hochladen</label>
                 <input type="file" name="logo" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
                 <button type="submit">Logo hochladen</button>
