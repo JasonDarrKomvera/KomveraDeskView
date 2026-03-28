@@ -546,8 +546,13 @@ function renderPermissionCheckboxes(selectedPermissions = []) {
                 ${group.permissions.map(permission => `
                     <label class="perm-item">
                         <div class="perm-text">
-                            <div class="perm-label">${escapeHtml(permission.label)}</div>
-                            <div class="perm-description">${escapeHtml(permission.description)}</div>
+                            <div class="perm-label">
+                                ${escapeHtml(permission.label)}
+                                <span class="perm-info-wrap">
+                                    <span class="perm-info-btn" tabindex="0" aria-label="Info">&#x24D8;</span>
+                                    <span class="perm-tooltip">${escapeHtml(permission.description)}</span>
+                                </span>
+                            </div>
                         </div>
                         <div class="perm-check">
                             <input
@@ -989,14 +994,61 @@ function renderAdminLayout(req, title, content) {
             }
             .perm-label {
                 font-weight: 700;
-                margin-bottom: 3px;
                 color: var(--text);
                 font-size: 14px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
             }
-            .perm-description {
-                font-size: 13px;
+            .perm-info-wrap {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+            }
+            .perm-info-btn {
+                font-size: 14px;
                 color: var(--muted);
-                line-height: 1.4;
+                cursor: default;
+                line-height: 1;
+                user-select: none;
+                transition: color 0.15s;
+            }
+            .perm-info-wrap:hover .perm-info-btn,
+            .perm-info-wrap:focus-within .perm-info-btn {
+                color: var(--primary);
+            }
+            .perm-tooltip {
+                display: none;
+                position: absolute;
+                left: 50%;
+                bottom: calc(100% + 8px);
+                transform: translateX(-50%);
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                font-size: 13px;
+                font-weight: 400;
+                line-height: 1.5;
+                padding: 8px 12px;
+                border-radius: 10px;
+                white-space: normal;
+                width: 220px;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+                z-index: 10;
+                pointer-events: none;
+            }
+            .perm-tooltip::after {
+                content: '';
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                border: 6px solid transparent;
+                border-top-color: var(--border);
+            }
+            .perm-info-wrap:hover .perm-tooltip,
+            .perm-info-wrap:focus-within .perm-tooltip {
+                display: block;
             }
             .perm-check {
                 flex-shrink: 0;
@@ -2006,39 +2058,158 @@ app.post('/admin/setup', async (req, res) => {
         refreshMsalClient();
 
         return res.send(`
+            <!DOCTYPE html>
             <html lang="de">
             <head>
                 <meta charset="UTF-8">
-                <title>Setup abgeschlossen</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Setup abgeschlossen – DeskView</title>
                 <style>
+                    * { box-sizing: border-box; margin: 0; padding: 0; }
+                    :root {
+                        --bg: #f0f4f8;
+                        --surface: #ffffff;
+                        --text: #1e293b;
+                        --muted: #64748b;
+                        --border: #e2e8f0;
+                        --primary: #2563eb;
+                        --primary-hover: #1d4ed8;
+                        --success-bg: #f0fdf4;
+                        --success-border: #bbf7d0;
+                        --success-text: #166534;
+                        --warn-bg: #fffbeb;
+                        --warn-border: #fde68a;
+                        --warn-text: #92400e;
+                    }
+                    [data-theme="dark"] {
+                        --bg: #0f172a;
+                        --surface: #1e293b;
+                        --text: #f1f5f9;
+                        --muted: #94a3b8;
+                        --border: #334155;
+                        --primary: #3b82f6;
+                        --primary-hover: #2563eb;
+                        --success-bg: #052e16;
+                        --success-border: #166534;
+                        --success-text: #86efac;
+                        --warn-bg: #1c1700;
+                        --warn-border: #78350f;
+                        --warn-text: #fcd34d;
+                    }
                     body {
-                        font-family: Arial, sans-serif;
-                        text-align: center;
-                        padding-top: 60px;
+                        min-height: 100vh;
+                        background: var(--bg);
+                        color: var(--text);
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        padding: 32px 20px;
+                        transition: background 0.2s, color 0.2s;
                     }
-                    .support-footer {
-                        margin-top: 30px;
-                        padding-top: 18px;
-                        border-top: 1px solid #e5e7eb;
+                    .card {
+                        background: var(--surface);
+                        border: 1px solid var(--border);
+                        border-radius: 20px;
+                        padding: 40px 48px;
+                        max-width: 520px;
+                        width: 100%;
                         text-align: center;
+                        box-shadow: 0 8px 32px rgba(0,0,0,0.10);
+                    }
+                    .icon {
+                        font-size: 52px;
+                        margin-bottom: 20px;
+                        line-height: 1;
+                    }
+                    h2 {
+                        font-size: 24px;
+                        font-weight: 800;
+                        margin-bottom: 12px;
+                        color: var(--text);
+                    }
+                    .success-box {
+                        background: var(--success-bg);
+                        border: 1px solid var(--success-border);
+                        color: var(--success-text);
+                        border-radius: 12px;
+                        padding: 12px 16px;
                         font-size: 14px;
-                        color: #6b7280;
+                        margin-bottom: 16px;
+                        text-align: left;
+                        line-height: 1.5;
                     }
-                    .support-footer a {
-                        color: #2563eb;
+                    .warn-box {
+                        background: var(--warn-bg);
+                        border: 1px solid var(--warn-border);
+                        color: var(--warn-text);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        font-size: 14px;
+                        margin-bottom: 24px;
+                        text-align: left;
+                        line-height: 1.5;
+                    }
+                    .warn-box strong { display: block; margin-bottom: 4px; }
+                    .login-btn {
+                        display: inline-block;
+                        background: var(--primary);
+                        color: #fff;
                         text-decoration: none;
+                        padding: 13px 32px;
+                        border-radius: 12px;
+                        font-weight: 700;
+                        font-size: 15px;
+                        transition: background 0.15s;
+                        width: 100%;
                     }
-                    .support-footer a:hover {
-                        text-decoration: underline;
+                    .login-btn:hover { background: var(--primary-hover); }
+                    .support-footer {
+                        margin-top: 28px;
+                        padding-top: 20px;
+                        border-top: 1px solid var(--border);
+                        font-size: 13px;
+                        color: var(--muted);
                     }
+                    .support-footer a { color: var(--primary); text-decoration: none; }
+                    .support-footer a:hover { text-decoration: underline; }
+                    .theme-btn {
+                        position: fixed;
+                        top: 16px;
+                        right: 16px;
+                        background: var(--surface);
+                        border: 1px solid var(--border);
+                        border-radius: 8px;
+                        padding: 7px 13px;
+                        cursor: pointer;
+                        color: var(--muted);
+                        font-size: 13px;
+                        transition: border-color 0.15s;
+                    }
+                    .theme-btn:hover { border-color: var(--primary); color: var(--primary); }
                 </style>
+                <script>
+                    (function() {
+                        var saved = localStorage.getItem('deskview-theme') || 'light';
+                        document.documentElement.setAttribute('data-theme', saved);
+                    })();
+                </script>
             </head>
             <body>
-                <h2>Ersteinrichtung abgeschlossen</h2>
-                <p>Master-Admin und Konfiguration wurden gespeichert.</p>
-                <p>Bitte den Server einmal neu starten, damit das neue Session Secret aktiv verwendet wird.</p>
-                <p><a href="/admin/login">Zum Login</a></p>
-                ${renderSupportFooter()}
+                <button class="theme-btn" onclick="(function(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('deskview-theme',n);})()">&#9790; Modus</button>
+                <div class="card">
+                    <div class="icon">&#10003;</div>
+                    <h2>Ersteinrichtung abgeschlossen</h2>
+                    <div class="success-box">
+                        Master-Admin und Konfiguration wurden erfolgreich gespeichert.
+                    </div>
+                    <div class="warn-box">
+                        <strong>&#9888; Server-Neustart erforderlich</strong>
+                        Damit das neue Session Secret aktiv verwendet wird, starte den Server bitte einmal neu.
+                    </div>
+                    <a href="/admin/login" class="login-btn">Zum Login &rarr;</a>
+                    ${renderSupportFooter()}
+                </div>
             </body>
             </html>
         `);
