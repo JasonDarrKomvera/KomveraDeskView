@@ -207,6 +207,7 @@ const DEFAULT_ROOMS = {
 const DEFAULT_CONFIG = {
     sessionSecret: '',
     seatClearInterval: 'never',
+    microsoftLoginEnabled: false,
     microsoft: {
         clientID: '',
         tenantID: '',
@@ -562,6 +563,10 @@ function ensureSingleMasterAdmin() {
     }));
 
     saveAdmins();
+}
+
+function isMicrosoftLoginEnabled() {
+    return appConfig.microsoftLoginEnabled === true;
 }
 
 function hasMicrosoftConfig() {
@@ -1069,6 +1074,12 @@ function renderAdminLayout(req, title, content) {
                 border-radius: 14px;
                 padding: 16px;
             }
+            .toggle-switch { position:relative; display:inline-block; width:44px; height:24px; flex-shrink:0; }
+            .toggle-switch input { opacity:0; width:0; height:0; }
+            .toggle-slider { position:absolute; cursor:pointer; inset:0; background:var(--border); border-radius:24px; transition:.2s; }
+            .toggle-slider:before { content:''; position:absolute; width:18px; height:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+            .toggle-switch input:checked + .toggle-slider { background:var(--primary); }
+            .toggle-switch input:checked + .toggle-slider:before { transform:translateX(20px); }
             .perm-global-bar {
                 margin-bottom: 12px;
             }
@@ -2142,6 +2153,12 @@ app.get('/admin/setup', (req, res) => {
                 }
                 .support-footer a { color: var(--primary); text-decoration: none; }
                 .support-footer a:hover { text-decoration: underline; }
+                .toggle-switch { position:relative; display:inline-block; width:44px; height:24px; flex-shrink:0; }
+                .toggle-switch input { opacity:0; width:0; height:0; }
+                .toggle-slider { position:absolute; cursor:pointer; inset:0; background:var(--border); border-radius:24px; transition:.2s; }
+                .toggle-slider:before { content:''; position:absolute; width:18px; height:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+                .toggle-switch input:checked + .toggle-slider { background:var(--primary); }
+                .toggle-switch input:checked + .toggle-slider:before { transform:translateX(20px); }
                 @media (max-width: 700px) {
                     .grid-2 { grid-template-columns: 1fr; }
                 }
@@ -2201,14 +2218,24 @@ app.get('/admin/setup', (req, res) => {
                             </div>
 
                             <h2 style="margin-top:16px;">Microsoft / Entra <span class="optional-tag">optional</span></h2>
-                            <label>Client ID</label>
-                            <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}" placeholder="Leer lassen falls nicht benötigt">
-                            <label>Tenant ID</label>
-                            <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}">
-                            <label>Client Secret</label>
-                            <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}">
-                            <label>Callback URL</label>
-                            <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}">
+
+                            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="microsoftLoginEnabled" id="ms_toggle_setup" value="1" onchange="document.getElementById('ms_fields_setup').style.display=this.checked?'block':'none'">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span style="font-size:14px;font-weight:600;color:var(--text);">Microsoft Login aktivieren</span>
+                            </div>
+                            <div id="ms_fields_setup" style="display:none;">
+                                <label>Client ID</label>
+                                <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}" placeholder="Leer lassen falls nicht benötigt">
+                                <label>Tenant ID</label>
+                                <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}">
+                                <label>Client Secret</label>
+                                <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}">
+                                <label>Callback URL</label>
+                                <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}">
+                            </div>
                         </div>
                     </div>
 
@@ -2287,6 +2314,7 @@ app.post('/admin/setup', setupLimiter, requireCsrf, async (req, res) => {
         saveAdmins();
 
         appConfig.sessionSecret = sessionSecret;
+        appConfig.microsoftLoginEnabled = req.body.microsoftLoginEnabled === '1';
         microsoftConfig = {
             clientID,
             tenantID,
@@ -3663,6 +3691,28 @@ app.get('/admin/microsoft', requireAdmin, requirePermission('microsoft.view'), (
             <h1 class="page-title">Microsoft Konfiguration</h1>
         </div>
 
+        ${hasPermission(req, 'microsoft.edit') ? `
+        <div class="card">
+            <h2>Microsoft Login</h2>
+            <p style="font-size:14px;color:var(--muted);margin-bottom:16px;line-height:1.5;">
+                Wenn aktiviert, melden sich Mitarbeiter per Microsoft-Konto an.<br>
+                Wenn deaktiviert, geben sie Name und Titel manuell ein.
+            </p>
+            <form method="POST" action="/admin/microsoft/toggle">
+                ${csrfField(req)}
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" name="enabled" value="1" onchange="this.form.submit()" ${isMicrosoftLoginEnabled() ? 'checked' : ''}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span style="font-size:14px;font-weight:600;">
+                        Microsoft Login ist ${isMicrosoftLoginEnabled() ? '<span style="color:var(--primary)">aktiviert</span>' : '<span style="color:var(--muted)">deaktiviert</span>'}
+                    </span>
+                </div>
+            </form>
+        </div>
+        ` : ''}
+
         <div class="card">
             <h2>Entra / Azure AD Daten</h2>
 
@@ -3727,6 +3777,17 @@ app.post('/admin/microsoft/update', requireAdmin, requirePermission('microsoft.e
     } catch (err) {
         console.error(err);
         return res.status(500).send('Microsoft Konfiguration konnte nicht gespeichert werden');
+    }
+});
+
+app.post('/admin/microsoft/toggle', requireAdmin, requirePermission('microsoft.edit'), requireCsrf, (req, res) => {
+    try {
+        appConfig.microsoftLoginEnabled = req.body.enabled === '1';
+        saveAppConfig();
+        return res.redirect('/admin/microsoft');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Einstellung konnte nicht gespeichert werden');
     }
 });
 
@@ -4231,6 +4292,7 @@ footer a:hover { text-decoration: underline; }
         <div class="room-info">Raum ${escapeHtml(room.roomnumber)}</div>
         <div class="seat-badge">Platz ${seat}</div>
 
+        ${isMicrosoftLoginEnabled() ? `
         <a class="ms-btn" href="/auth/login">
             <svg width="20" height="20" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
@@ -4241,6 +4303,20 @@ footer a:hover { text-decoration: underline; }
             Mit Microsoft anmelden
         </a>
         <div class="hint-text">Nach dem Login wird der Platz automatisch eingetragen.</div>
+        ` : `
+        <form method="POST" action="/${encodeURIComponent(roomId)}/sit/${seat}" style="text-align:left;">
+            <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
+            <label style="display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:5px;">Dein Name</label>
+            <input type="text" name="name" placeholder="z. B. Max Mustermann" required
+                style="width:100%;padding:11px 13px;margin-bottom:12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:var(--surface);color:var(--text);">
+            <label style="display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:5px;">Jobtitel <span style="font-weight:400;opacity:.7;">(optional)</span></label>
+            <input type="text" name="title" placeholder="z. B. Entwickler"
+                style="width:100%;padding:11px 13px;margin-bottom:20px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:var(--surface);color:var(--text);">
+            <button type="submit" class="ms-btn" style="border:none;cursor:pointer;width:100%;">
+                Platz belegen
+            </button>
+        </form>
+        `}
     </div>
 </div>
 
@@ -4262,6 +4338,69 @@ footer a:hover { text-decoration: underline; }
 </html>
         `);
     });
+});
+
+/*
+==================================================
+MANUELLES EINCHECKEN
+==================================================
+*/
+app.post('/:room/sit/:seat', requireCsrf, (req, res) => {
+    if (isMicrosoftLoginEnabled()) {
+        return res.status(400).send('Manuelles Einchecken ist deaktiviert.');
+    }
+
+    const roomId = req.params.room;
+    const seat = Number.parseInt(req.params.seat, 10);
+    const room = getRoom(roomId);
+
+    if (!room) return res.status(404).send('Raum nicht gefunden');
+    if (!isValidSeat(seat)) return res.status(400).send('Ungültiger Platz');
+
+    const name = String(req.body.name || '').trim();
+    const title = String(req.body.title || '').trim();
+
+    if (!name) return res.status(400).send('Name ist erforderlich');
+    if (name.length > 128) return res.status(400).send('Name zu lang');
+    if (title.length > 128) return res.status(400).send('Jobtitel zu lang');
+
+    room.seats[seat - 1] = { name, title: title || 'Mitarbeiter', since: Date.now() };
+    saveRooms();
+
+    const logoExists = fs.existsSync(LOGO_FILE);
+    return res.send(`
+        <!DOCTYPE html>
+        <html lang="de">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Eingecheckt</title>
+            <style>
+                * { box-sizing: border-box; margin: 0; padding: 0; }
+                :root { --bg:#f0f4f8; --surface:#fff; --text:#1e293b; --muted:#64748b; --border:#e2e8f0; --primary:#2563eb; }
+                [data-theme="dark"] { --bg:#0f172a; --surface:#1e293b; --text:#f1f5f9; --muted:#94a3b8; --border:#334155; }
+                body { min-height:100vh; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; display:flex; align-items:center; justify-content:center; padding:32px 20px; }
+                .card { background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:40px 36px; max-width:440px; width:100%; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.08); }
+                .icon { font-size:52px; margin-bottom:16px; }
+                h2 { font-size:22px; font-weight:800; margin-bottom:8px; }
+                .sub { font-size:15px; color:var(--muted); margin-bottom:24px; }
+                .back { display:inline-block; color:var(--primary); text-decoration:none; font-size:14px; font-weight:600; }
+                .back:hover { text-decoration:underline; }
+            </style>
+            <script>(function(){var s=localStorage.getItem('deskview-theme')||'light';document.documentElement.setAttribute('data-theme',s);})();</script>
+        </head>
+        <body>
+            <div class="card">
+                ${logoExists ? `<div style="margin-bottom:20px;"><img src="/logo.png" alt="Logo" style="max-height:60px;max-width:200px;object-fit:contain;"></div>` : ''}
+                <div class="icon">&#10003;</div>
+                <h2>Eingecheckt!</h2>
+                <p class="sub"><strong>${escapeHtml(name)}</strong> sitzt jetzt auf Platz ${seat}.</p>
+                <a href="/${encodeURIComponent(roomId)}" class="back">&#8592; Zurück zur Raumübersicht</a>
+                ${renderSupportFooter()}
+            </div>
+        </body>
+        </html>
+    `);
 });
 
 /*
