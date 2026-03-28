@@ -15,6 +15,10 @@ const app = express();
 const PORT = 3000;
 const BCRYPT_ROUNDS = 12;
 
+if (process.env.HTTPS_ENABLED === 'true') {
+    app.set('trust proxy', 1);
+}
+
 app.use((req, res, next) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     next();
@@ -1564,7 +1568,7 @@ function buildSessionMiddleware() {
         cookie: {
             httpOnly: true,
             sameSite: 'lax',
-            secure: false
+            secure: process.env.HTTPS_ENABLED === 'true'
         }
     });
 }

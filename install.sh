@@ -27,6 +27,55 @@ case "$ID" in
         ;;
 esac
 
+# ──────────────────────────────────────────────
+# HTTPS-Auswahl
+# ──────────────────────────────────────────────
+echo ""
+echo "╔══════════════════════════════════════════╗"
+echo "║         HTTPS / SSL Einrichtung          ║"
+echo "╚══════════════════════════════════════════╝"
+echo ""
+echo "Möchtest du HTTPS mit nginx + Let's Encrypt einrichten?"
+echo "  → Voraussetzung: Eine Domain die auf diesen Server zeigt"
+echo "  → Ohne HTTPS läuft die App über HTTP (nur lokal/intern empfohlen)"
+echo ""
+read -r -p "HTTPS einrichten? [j/N]: " HTTPS_CHOICE
+
+HTTPS_ENABLED=false
+DOMAIN=""
+
+if [[ "$HTTPS_CHOICE" =~ ^[jJyY]$ ]]; then
+    echo ""
+    read -r -p "Domain eingeben (z.B. deskview.example.com): " DOMAIN
+    DOMAIN="${DOMAIN// /}"
+
+    if [ -z "$DOMAIN" ]; then
+        echo "Keine Domain eingegeben – weiter mit HTTP."
+        HTTPS_ENABLED=false
+    else
+        echo ""
+        read -r -p "E-Mail für Let's Encrypt (für Zertifikat-Benachrichtigungen): " LE_EMAIL
+        LE_EMAIL="${LE_EMAIL// /}"
+        if [ -z "$LE_EMAIL" ]; then
+            echo "Keine E-Mail eingegeben – weiter mit HTTP."
+            HTTPS_ENABLED=false
+        else
+            HTTPS_ENABLED=true
+            echo ""
+            echo "  Domain : $DOMAIN"
+            echo "  E-Mail : $LE_EMAIL"
+            echo "  HTTPS  : wird eingerichtet"
+        fi
+    fi
+else
+    echo "  → Weiter mit HTTP."
+fi
+
+echo ""
+
+# ──────────────────────────────────────────────
+# System vorbereiten
+# ──────────────────────────────────────────────
 echo "==> System wird vorbereitet..."
 sudo apt update
 sudo apt install -y curl ca-certificates gnupg git
@@ -41,6 +90,9 @@ echo "==> Node Version:"
 node -v
 npm -v
 
+# ──────────────────────────────────────────────
+# App installieren
+# ──────────────────────────────────────────────
 echo "==> Installiere Anwendung nach $APP_DIR..."
 sudo mkdir -p "$APP_DIR"
 sudo chown -R "$USER:$USER" "$APP_DIR"
@@ -61,7 +113,18 @@ npm install --omit=dev
 
 mkdir -p public
 
+# ──────────────────────────────────────────────
+# systemd Service
+# ──────────────────────────────────────────────
 echo "==> systemd Service wird erstellt..."
+
+if [ "$HTTPS_ENABLED" = true ]; then
+    EXTRA_ENV="Environment=NODE_ENV=production
+Environment=HTTPS_ENABLED=true"
+else
+    EXTRA_ENV="Environment=NODE_ENV=production"
+fi
+
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=Komvera DeskView
@@ -74,21 +137,81 @@ ExecStart=/usr/bin/node ${APP_DIR}/server.js
 Restart=always
 RestartSec=5
 User=${USER}
-Environment=NODE_ENV=production
+${EXTRA_ENV}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-echo "==> Service wird aktiviert..."
 sudo systemctl daemon-reload
 sudo systemctl enable ${SERVICE_NAME}
 sudo systemctl restart ${SERVICE_NAME}
 
+# ──────────────────────────────────────────────
+# nginx + Let's Encrypt (nur wenn HTTPS gewählt)
+# ──────────────────────────────────────────────
+if [ "$HTTPS_ENABLED" = true ]; then
+    echo ""
+    echo "==> nginx wird installiert..."
+    sudo apt install -y nginx
+
+    echo "==> Certbot wird installiert..."
+    sudo apt install -y certbot python3-certbot-nginx
+
+    echo "==> nginx Konfiguration wird erstellt..."
+    sudo tee /etc/nginx/sites-available/${SERVICE_NAME} > /dev/null <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+
+    sudo ln -sf /etc/nginx/sites-available/${SERVICE_NAME} /etc/nginx/sites-enabled/${SERVICE_NAME}
+    sudo nginx -t
+    sudo systemctl reload nginx
+
+    echo "==> SSL-Zertifikat wird beantragt (Let's Encrypt)..."
+    sudo certbot --nginx \
+        -d "$DOMAIN" \
+        --email "$LE_EMAIL" \
+        --agree-tos \
+        --non-interactive \
+        --redirect
+
+    echo ""
+    echo "✅ HTTPS eingerichtet"
+    echo "   Erreichbar unter: https://${DOMAIN}"
+    echo ""
+    echo "   Zertifikat wird automatisch erneuert (certbot-Timer aktiv)."
+fi
+
+# ──────────────────────────────────────────────
+# Fertig
+# ──────────────────────────────────────────────
 echo ""
 echo "✅ Installation fertig"
+
+if [ "$HTTPS_ENABLED" = true ]; then
+    echo "   App erreichbar unter: https://${DOMAIN}"
+else
+    echo "   App erreichbar unter: http://<Server-IP>:3000"
+fi
+
+echo ""
 echo "Status prüfen mit:"
-echo "sudo systemctl status ${SERVICE_NAME}"
+echo "  sudo systemctl status ${SERVICE_NAME}"
 echo ""
 echo "Logs ansehen mit:"
-echo "journalctl -u ${SERVICE_NAME} -f"
+echo "  journalctl -u ${SERVICE_NAME} -f"
