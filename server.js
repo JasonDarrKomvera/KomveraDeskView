@@ -1564,7 +1564,7 @@ function buildSessionMiddleware() {
         cookie: {
             httpOnly: true,
             sameSite: 'lax',
-            secure: false
+            secure: process.env.NODE_ENV === 'production'
         }
     });
 }
@@ -3231,6 +3231,18 @@ app.post('/admin/create-room', requireAdmin, requirePermission('rooms.create'), 
             return res.status(400).send('Fehlende Daten');
         }
 
+        if (roomId.length > 64 || abteilung.length > 128 || roomnumber.length > 32) {
+            return res.status(400).send('Eingabe zu lang');
+        }
+
+        if (!/^[a-zA-Z0-9_\-]+$/.test(roomId)) {
+            return res.status(400).send('Raum-ID darf nur Buchstaben, Zahlen, - und _ enthalten');
+        }
+
+        if (['__proto__', 'constructor', 'prototype'].includes(roomId)) {
+            return res.status(400).send('Ungültige Raum-ID');
+        }
+
         if (rooms[roomId]) {
             return res.status(400).send('Raum existiert bereits');
         }
@@ -3481,8 +3493,16 @@ app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'
             return res.status(400).send('Fehlende Daten');
         }
 
+        if (username.length > 64 || displayName.length > 128) {
+            return res.status(400).send('Eingabe zu lang');
+        }
+
         if (password.length < 8) {
             return res.status(400).send('Das Passwort muss mindestens 8 Zeichen lang sein');
+        }
+
+        if (password.length > 256) {
+            return res.status(400).send('Passwort zu lang');
         }
 
         if (getAdminUser(username)) {
@@ -3578,9 +3598,16 @@ app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), r
         admin.permissions = permissions;
         admin.displayName = displayName;
 
+        if (displayName.length > 128) {
+            return res.status(400).send('Anzeigename zu lang');
+        }
+
         if (password.trim()) {
             if (password.length < 8) {
                 return res.status(400).send('Das neue Passwort muss mindestens 8 Zeichen lang sein');
+            }
+            if (password.length > 256) {
+                return res.status(400).send('Passwort zu lang');
             }
             admin.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
         }
@@ -4451,7 +4478,7 @@ app.use((err, req, res, next) => {
         </head>
         <body>
             <h2>Interner Serverfehler</h2>
-            <p>${escapeHtml(err.message || 'Unbekannter Fehler')}</p>
+            <p>Ein unerwarteter Fehler ist aufgetreten. Bitte versuche es erneut.</p>
             ${renderSupportFooter()}
         </body>
         </html>
