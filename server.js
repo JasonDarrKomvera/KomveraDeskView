@@ -1525,10 +1525,15 @@ TRMNL PUSH
 ==================================================
 */
 async function pushToTrmnl(room) {
-    if (!room.trmnlUuid || !room.trmnlApiKey) return;
+    if (!room.trmnlUuid || !room.trmnlApiKey) {
+        console.log(`TRMNL Push übersprungen (${room.id}): UUID oder API Key fehlt`);
+        return;
+    }
     try {
         const payload = renderRoomApiJson(room);
-        await fetch(`https://usetrmnl.com/api/custom_plugins/${encodeURIComponent(room.trmnlUuid)}`, {
+        const url = `https://usetrmnl.com/api/custom_plugins/${encodeURIComponent(room.trmnlUuid)}`;
+        console.log(`TRMNL Push → ${url}`);
+        const res = await fetch(url, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${room.trmnlApiKey}`,
@@ -1536,6 +1541,8 @@ async function pushToTrmnl(room) {
             },
             body: JSON.stringify({ merge_variables: payload })
         });
+        const text = await res.text();
+        console.log(`TRMNL Push Antwort (${room.id}): ${res.status} ${text}`);
     } catch (err) {
         console.error(`TRMNL Push Fehler (${room.id}):`, err.message);
     }
