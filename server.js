@@ -29,6 +29,7 @@ const LOGO_FILE = path.join(PUBLIC_DIR, 'logo.png');
 const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
 const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+const KEY_FILE = path.join(DATA_DIR, 'app.key');
 
 /*
 ==================================================
@@ -189,6 +190,60 @@ const DEFAULT_CONFIG = {
 
 /*
 ==================================================
+VERSCHLÜSSELUNG
+==================================================
+*/
+function getOrCreateEncryptionKey() {
+    if (fs.existsSync(KEY_FILE)) {
+        const key = fs.readFileSync(KEY_FILE);
+        if (key.length === 32) return key;
+    }
+    const key = crypto.randomBytes(32);
+    fs.writeFileSync(KEY_FILE, key);
+    return key;
+}
+
+function encryptValue(plaintext) {
+    if (!plaintext) return '';
+    try {
+        const key = getOrCreateEncryptionKey();
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return 'enc:' + iv.toString('hex') + ':' + authTag + ':' + encrypted;
+    } catch (err) {
+        console.error('Verschlüsselung fehlgeschlagen:', err);
+        return plaintext;
+    }
+}
+
+function decryptValue(ciphertext) {
+    if (!ciphertext) return '';
+    if (!String(ciphertext).startsWith('enc:')) return String(ciphertext);
+    try {
+        const key = getOrCreateEncryptionKey();
+        const parts = ciphertext.slice(4).split(':');
+        if (parts.length < 3) return '';
+        const ivHex = parts[0];
+        const authTagHex = parts[1];
+        const encrypted = parts.slice(2).join(':');
+        const iv = Buffer.from(ivHex, 'hex');
+        const authTag = Buffer.from(authTagHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (err) {
+        console.error('Entschlüsselung fehlgeschlagen:', err);
+        return '';
+    }
+}
+
+/*
+==================================================
 JSON FUNKTIONEN
 ==================================================
 */
@@ -237,7 +292,10 @@ if (!appConfig.microsoft || typeof appConfig.microsoft !== 'object') {
     appConfig.microsoft = deepClone(DEFAULT_CONFIG.microsoft);
 }
 
-let microsoftConfig = appConfig.microsoft;
+let microsoftConfig = {
+    ...appConfig.microsoft,
+    clientSecret: decryptValue(appConfig.microsoft.clientSecret || '')
+};
 
 /*
 ==================================================
@@ -325,8 +383,14 @@ function saveAdmins() {
 }
 
 function saveAppConfig() {
-    appConfig.microsoft = microsoftConfig;
-    writeJsonFile(CONFIG_FILE, appConfig);
+    const toWrite = {
+        ...appConfig,
+        microsoft: {
+            ...microsoftConfig,
+            clientSecret: encryptValue(microsoftConfig.clientSecret || '')
+        }
+    };
+    writeJsonFile(CONFIG_FILE, toWrite);
 }
 
 function saveMicrosoftConfig() {
@@ -986,6 +1050,35 @@ function renderAdminLayout(req, title, content) {
             .support-footer-text {
                 margin-bottom: 8px;
             }
+            .field-wrap {
+                position: relative;
+                margin-bottom: 14px;
+            }
+            .field-wrap input {
+                margin-bottom: 0;
+                padding-right: 48px;
+            }
+            .eye-btn {
+                position: absolute;
+                right: 0;
+                top: 0;
+                height: 100%;
+                padding: 0 13px;
+                background: none;
+                border: none;
+                border-left: 1px solid var(--input-border);
+                border-radius: 0 10px 10px 0;
+                cursor: pointer;
+                color: var(--muted);
+                font-size: 16px;
+                display: flex;
+                align-items: center;
+                transition: color 0.15s, background 0.15s;
+            }
+            .eye-btn:hover {
+                color: var(--text);
+                background: rgba(0,0,0,0.04);
+            }
             .mobile-topbar {
                 display: none;
             }
@@ -1095,6 +1188,13 @@ function renderAdminLayout(req, title, content) {
                 var next = current === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', next);
                 localStorage.setItem('deskview-theme', next);
+            }
+            function toggleVis(id) {
+                var inp = document.getElementById(id);
+                if (!inp) return;
+                inp.type = inp.type === 'password' ? 'text' : 'password';
+                var btn = document.querySelector('[data-eye="' + id + '"]');
+                if (btn) btn.textContent = inp.type === 'password' ? '\uD83D\uDC41' : '\uD83D\uDE48';
             }
             function openSidebar() {
                 document.querySelector('.sidebar').classList.add('sidebar-open');
@@ -2115,6 +2215,31 @@ app.get('/admin/login', (req, res) => {
                 .support-footer a:hover {
                     text-decoration: underline;
                 }
+                .field-wrap {
+                    position: relative;
+                    margin-bottom: 14px;
+                }
+                .field-wrap input {
+                    margin-bottom: 0;
+                    padding-right: 48px;
+                }
+                .eye-btn {
+                    position: absolute;
+                    right: 0;
+                    top: 0;
+                    height: 100%;
+                    padding: 0 13px;
+                    background: none;
+                    border: none;
+                    border-left: 1px solid var(--border);
+                    border-radius: 0 10px 10px 0;
+                    cursor: pointer;
+                    color: var(--muted);
+                    font-size: 16px;
+                    display: flex;
+                    align-items: center;
+                }
+                .eye-btn:hover { color: var(--primary); }
             </style>
             <script>
                 (function() {
@@ -2137,7 +2262,10 @@ app.get('/admin/login', (req, res) => {
                     <label for="username">Benutzername</label>
                     <input type="text" id="username" name="username" placeholder="Benutzername" required autofocus>
                     <label for="password">Passwort</label>
-                    <input type="password" id="password" name="password" placeholder="Passwort" required>
+                    <div class="field-wrap">
+                        <input type="password" id="password" name="password" placeholder="Passwort" required>
+                        <button type="button" class="eye-btn" data-eye="password" onclick="toggleVis('password')">&#128065;</button>
+                    </div>
                     <button type="submit">Anmelden</button>
                 </form>
                 <div class="home-link">
@@ -2151,6 +2279,13 @@ app.get('/admin/login', (req, res) => {
                     var next = current === 'dark' ? 'light' : 'dark';
                     document.documentElement.setAttribute('data-theme', next);
                     localStorage.setItem('deskview-theme', next);
+                }
+                function toggleVis(id) {
+                    var inp = document.getElementById(id);
+                    if (!inp) return;
+                    inp.type = inp.type === 'password' ? 'text' : 'password';
+                    var btn = document.querySelector('[data-eye="' + id + '"]');
+                    if (btn) btn.textContent = inp.type === 'password' ? '\uD83D\uDC41' : '\uD83D\uDE48';
                 }
             </script>
         </body>
@@ -2274,14 +2409,20 @@ app.get('/admin/account', requireAdmin, (req, res) => {
                 <h2>Eigenes Passwort ändern</h2>
                 <form method="POST" action="/admin/account/password">
                     <label>Aktuelles Passwort</label>
-                    <input type="password" name="currentPassword" required>
-
+                    <div class="field-wrap">
+                        <input type="password" id="acc_cur" name="currentPassword" required>
+                        <button type="button" class="eye-btn" data-eye="acc_cur" onclick="toggleVis('acc_cur')">&#128065;</button>
+                    </div>
                     <label>Neues Passwort</label>
-                    <input type="password" name="newPassword" required>
-
+                    <div class="field-wrap">
+                        <input type="password" id="acc_new" name="newPassword" required>
+                        <button type="button" class="eye-btn" data-eye="acc_new" onclick="toggleVis('acc_new')">&#128065;</button>
+                    </div>
                     <label>Neues Passwort wiederholen</label>
-                    <input type="password" name="confirmPassword" required>
-
+                    <div class="field-wrap">
+                        <input type="password" id="acc_con" name="confirmPassword" required>
+                        <button type="button" class="eye-btn" data-eye="acc_con" onclick="toggleVis('acc_con')">&#128065;</button>
+                    </div>
                     <button type="submit">Passwort ändern</button>
                 </form>
             </div>
@@ -2354,7 +2495,10 @@ app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (re
 
             <form method="POST" action="/admin/system/session-secret">
                 <label>Neues Session Secret</label>
-                <input type="text" name="sessionSecret" value="${escapeHtml(appConfig.sessionSecret || '')}" required>
+                <div class="field-wrap">
+                    <input type="password" id="sys_secret" name="sessionSecret" value="${escapeHtml(appConfig.sessionSecret || '')}" required>
+                    <button type="button" class="eye-btn" data-eye="sys_secret" onclick="toggleVis('sys_secret')">&#128065;</button>
+                </div>
                 <button type="submit">Session Secret speichern</button>
             </form>
         </div>
@@ -2819,7 +2963,10 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
                         <input type="text" name="displayName" placeholder="z. B. Max Mustermann">
 
                         <label>Passwort</label>
-                        <input type="password" name="password" required>
+                        <div class="field-wrap">
+                            <input type="password" id="adm_create_pw" name="password" required>
+                            <button type="button" class="eye-btn" data-eye="adm_create_pw" onclick="toggleVis('adm_create_pw')">&#128065;</button>
+                        </div>
 
                         <label>Berechtigungen</label>
                         <div class="permission-box">
@@ -2923,7 +3070,10 @@ app.get('/admin/admins/edit/:username', requireAdmin, requirePermission('admins.
                 <input type="text" name="displayName" value="${escapeHtml(admin.displayName || '')}" placeholder="z. B. Max Mustermann">
 
                 <label>Neues Passwort</label>
-                <input type="password" name="password" placeholder="Leer lassen = unverändert">
+                <div class="field-wrap">
+                    <input type="password" id="adm_edit_pw" name="password" placeholder="Leer lassen = unverändert">
+                    <button type="button" class="eye-btn" data-eye="adm_edit_pw" onclick="toggleVis('adm_edit_pw')">&#128065;</button>
+                </div>
 
                 <label>Berechtigungen</label>
                 <div class="permission-box">
@@ -3027,7 +3177,10 @@ app.get('/admin/microsoft', requireAdmin, requirePermission('microsoft.view'), (
                         <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}" required>
 
                         <label>Client Secret</label>
-                        <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}" required>
+                        <div class="field-wrap">
+                            <input type="password" id="ms_secret" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}" required>
+                            <button type="button" class="eye-btn" data-eye="ms_secret" onclick="toggleVis('ms_secret')">&#128065;</button>
+                        </div>
 
                         <label>Callback URL</label>
                         <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}" required>
