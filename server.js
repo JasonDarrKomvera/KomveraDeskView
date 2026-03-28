@@ -1340,18 +1340,21 @@ SESSION
 ensureSingleMasterAdmin();
 const bootstrapSessionSecret = generateStrongSecret();
 
-app.use(session({
-    secret: (req, callback) => {
-        callback(null, String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret);
-    },
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: false
-    }
-}));
+function buildSessionMiddleware() {
+    return session({
+        secret: String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret,
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+            httpOnly: true,
+            sameSite: 'lax',
+            secure: false
+        }
+    });
+}
+
+let sessionMiddleware = buildSessionMiddleware();
+app.use((req, res, next) => sessionMiddleware(req, res, next));
 
 /*
 ==================================================
@@ -2068,6 +2071,7 @@ app.post('/admin/setup', async (req, res) => {
         };
         saveAppConfig();
         refreshMsalClient();
+        sessionMiddleware = buildSessionMiddleware();
 
         return res.send(`
             <!DOCTYPE html>
