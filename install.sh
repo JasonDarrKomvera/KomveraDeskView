@@ -39,10 +39,14 @@ echo "Möchtest du HTTPS mit nginx + Let's Encrypt einrichten?"
 echo "  → Voraussetzung: Eine Domain die auf diesen Server zeigt"
 echo "  → Ohne HTTPS läuft die App über HTTP (nur lokal/intern empfohlen)"
 echo ""
-read -r -p "HTTPS einrichten? [j/N]: " HTTPS_CHOICE
 
 HTTPS_ENABLED=false
 DOMAIN=""
+
+# Stelle sicher dass stdin vom Terminal kommt (auch bei curl | bash)
+exec < /dev/tty
+
+read -r -p "HTTPS einrichten? [j/N]: " HTTPS_CHOICE
 
 if [[ "$HTTPS_CHOICE" =~ ^[jJyY]$ ]]; then
     echo ""
