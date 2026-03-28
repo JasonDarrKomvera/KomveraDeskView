@@ -349,6 +349,7 @@ function isValidSeat(seat) {
 function normalizeAdmin(admin) {
     return {
         username: String(admin?.username || '').trim(),
+        displayName: String(admin?.displayName || '').trim(),
         passwordHash: String(admin?.passwordHash || ''),
         master: Boolean(admin?.master),
         permissions: Array.isArray(admin?.permissions)
@@ -544,7 +545,7 @@ function renderSidebar(req) {
                 ${logoExists ? `<img src="/logo.png" alt="Logo" class="sidebar-logo">` : ''}
                 <span class="brand-text">DeskView Admin</span>
             </div>
-            ${currentAdmin ? `<div class="sidebar-user">${escapeHtml(currentAdmin.username)}${currentAdmin.master ? ' <span class="badge-master-sm">MASTER</span>' : ''}</div>` : ''}
+            ${currentAdmin ? `<div class="sidebar-user">${escapeHtml(currentAdmin.displayName || currentAdmin.username)}${currentAdmin.master ? ' <span class="badge-master-sm">MASTER</span>' : ''}<div style="font-size:11px;opacity:0.6;margin-top:2px;">@${escapeHtml(currentAdmin.username)}</div></div>` : ''}
             <nav class="nav">
                 ${items}
             </nav>
@@ -650,12 +651,11 @@ function renderAdminLayout(req, title, content) {
                 gap: 10px;
             }
             .sidebar-logo {
-                max-width: 140px;
-                max-height: 56px;
+                max-width: 180px;
+                max-height: 80px;
                 width: auto;
                 height: auto;
                 object-fit: contain;
-                filter: brightness(1.1);
             }
             .brand-text {
                 font-size: 13px;
@@ -986,16 +986,66 @@ function renderAdminLayout(req, title, content) {
             .support-footer-text {
                 margin-bottom: 8px;
             }
+            .mobile-topbar {
+                display: none;
+            }
             @media (max-width: 900px) {
                 .layout {
                     display: block;
                 }
                 .sidebar {
-                    width: 100%;
-                    height: auto;
-                    position: static;
-                    flex-direction: row;
-                    flex-wrap: wrap;
+                    display: none;
+                    position: fixed;
+                    z-index: 500;
+                    width: 280px;
+                    top: 0;
+                    left: 0;
+                    height: 100vh;
+                    box-shadow: 4px 0 30px rgba(0,0,0,0.4);
+                }
+                .sidebar.sidebar-open {
+                    display: flex;
+                }
+                .sidebar-overlay {
+                    display: none;
+                    position: fixed;
+                    inset: 0;
+                    background: rgba(0,0,0,0.5);
+                    z-index: 499;
+                }
+                .sidebar-overlay.open {
+                    display: block;
+                }
+                .mobile-topbar {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    background: var(--card-bg);
+                    border-bottom: 1px solid var(--border);
+                    padding: 0 16px;
+                    height: 56px;
+                    position: sticky;
+                    top: 0;
+                    z-index: 100;
+                }
+                .hamburger-btn {
+                    background: none;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    cursor: pointer;
+                    color: var(--text);
+                    font-size: 18px;
+                    line-height: 1;
+                    transition: background 0.15s;
+                }
+                .hamburger-btn:hover {
+                    background: var(--border);
+                }
+                .mobile-topbar-title {
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: var(--text);
                 }
                 .grid-2, .grid-3 {
                     grid-template-columns: 1fr;
@@ -1011,6 +1061,10 @@ function renderAdminLayout(req, title, content) {
                     padding-top: 2px;
                 }
             }
+            @media (min-width: 901px) {
+                .hamburger-btn { display: none; }
+                .sidebar-overlay { display: none !important; }
+            }
         </style>
         <script>
             (function() {
@@ -1020,9 +1074,15 @@ function renderAdminLayout(req, title, content) {
         </script>
     </head>
     <body>
+        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
         <div class="layout">
             ${renderSidebar(req)}
             <main class="main">
+                <div class="mobile-topbar">
+                    <button class="hamburger-btn" onclick="openSidebar()">&#9776;</button>
+                    <span class="mobile-topbar-title">DeskView Admin</span>
+                    <button class="hamburger-btn" onclick="toggleTheme()" style="font-size:14px;">&#9790;</button>
+                </div>
                 <div class="page-content">
                     ${content}
                 </div>
@@ -1035,6 +1095,14 @@ function renderAdminLayout(req, title, content) {
                 var next = current === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', next);
                 localStorage.setItem('deskview-theme', next);
+            }
+            function openSidebar() {
+                document.querySelector('.sidebar').classList.add('sidebar-open');
+                document.getElementById('sidebarOverlay').classList.add('open');
+            }
+            function closeSidebar() {
+                document.querySelector('.sidebar').classList.remove('sidebar-open');
+                document.getElementById('sidebarOverlay').classList.remove('open');
             }
         </script>
     </body>
@@ -1249,8 +1317,8 @@ app.get('/', (req, res) => {
                     box-shadow: 0 1px 8px rgba(0,0,0,0.05);
                 }
                 .header-logo {
-                    max-height: 38px;
-                    max-width: 180px;
+                    max-height: 52px;
+                    max-width: 220px;
                     width: auto;
                     height: auto;
                     object-fit: contain;
@@ -1499,162 +1567,277 @@ app.get('/admin/setup', (req, res) => {
 
     const generatedSecret = generateStrongSecret();
 
+    const logoExists = fs.existsSync(LOGO_FILE);
     res.send(`
+        <!DOCTYPE html>
         <html lang="de">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Ersteinrichtung</title>
+            <title>Ersteinrichtung – DeskView</title>
             <style>
-                * { box-sizing: border-box; }
+                * { box-sizing: border-box; margin: 0; padding: 0; }
+                :root {
+                    --bg: #f0f4f8;
+                    --surface: #ffffff;
+                    --text: #1e293b;
+                    --muted: #64748b;
+                    --border: #e2e8f0;
+                    --primary: #2563eb;
+                    --primary-hover: #1d4ed8;
+                    --input-bg: #ffffff;
+                    --card-bg: #f8fafc;
+                    --notice-bg: #eff6ff;
+                    --notice-text: #1d4ed8;
+                    --notice-border: #bfdbfe;
+                }
+                [data-theme="dark"] {
+                    --bg: #0f172a;
+                    --surface: #1e293b;
+                    --text: #f1f5f9;
+                    --muted: #94a3b8;
+                    --border: #334155;
+                    --primary: #3b82f6;
+                    --primary-hover: #2563eb;
+                    --input-bg: #0f172a;
+                    --card-bg: #0f172a;
+                    --notice-bg: #1e3a5f;
+                    --notice-text: #93c5fd;
+                    --notice-border: #1e40af;
+                }
                 body {
-                    margin: 0;
                     min-height: 100vh;
+                    background: var(--bg);
+                    color: var(--text);
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                    padding: 32px 20px;
+                    transition: background 0.2s, color 0.2s;
+                }
+                .page-wrap {
+                    max-width: 860px;
+                    margin: 0 auto;
+                }
+                .setup-header {
                     display: flex;
                     align-items: center;
-                    justify-content: center;
-                    background: #f3f4f6;
-                    font-family: Arial, sans-serif;
-                    padding: 24px;
+                    justify-content: space-between;
+                    margin-bottom: 32px;
                 }
-                .box {
-                    width: 100%;
-                    max-width: 820px;
-                    background: white;
-                    border-radius: 18px;
-                    padding: 32px;
-                    box-shadow: 0 15px 35px rgba(0,0,0,0.08);
+                .setup-logo img {
+                    max-height: 52px;
+                    max-width: 180px;
+                    width: auto;
+                    height: auto;
+                    object-fit: contain;
                 }
-                h1, h2 {
-                    margin-top: 0;
+                .setup-logo-text {
+                    font-size: 20px;
+                    font-weight: 800;
+                    color: var(--text);
                 }
-                p {
-                    color: #6b7280;
-                    line-height: 1.5;
-                }
-                input {
-                    width: 100%;
-                    padding: 12px;
-                    margin: 8px 0 16px 0;
-                    border: 1px solid #d1d5db;
-                    border-radius: 10px;
-                    box-sizing: border-box;
-                }
-                button {
-                    width: 100%;
-                    padding: 12px;
-                    background: #2563eb;
-                    color: white;
-                    border: none;
-                    border-radius: 10px;
-                    font-weight: bold;
+                .theme-btn {
+                    background: var(--surface);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    padding: 8px 14px;
                     cursor: pointer;
-                    margin-top: 8px;
+                    color: var(--muted);
+                    font-size: 13px;
+                    transition: border-color 0.15s;
+                }
+                .theme-btn:hover { border-color: var(--primary); color: var(--primary); }
+                h1 {
+                    font-size: 28px;
+                    font-weight: 800;
+                    margin-bottom: 8px;
+                }
+                .subtitle {
+                    font-size: 15px;
+                    color: var(--muted);
+                    margin-bottom: 28px;
+                    line-height: 1.6;
+                }
+                .notice {
+                    background: var(--notice-bg);
+                    border: 1px solid var(--notice-border);
+                    color: var(--notice-text);
+                    padding: 14px 16px;
+                    border-radius: 12px;
+                    margin-bottom: 28px;
+                    font-size: 14px;
+                    line-height: 1.5;
                 }
                 .grid-2 {
                     display: grid;
                     grid-template-columns: 1fr 1fr;
-                    gap: 24px;
+                    gap: 20px;
+                    margin-bottom: 20px;
                 }
                 .card {
-                    background: #f9fafb;
-                    border: 1px solid #e5e7eb;
-                    border-radius: 14px;
-                    padding: 18px;
+                    background: var(--surface);
+                    border: 1px solid var(--border);
+                    border-radius: 16px;
+                    padding: 22px;
+                    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
                 }
-                .hint {
-                    background: #eff6ff;
-                    border: 1px solid #bfdbfe;
-                    color: #1d4ed8;
-                    padding: 12px 14px;
-                    border-radius: 12px;
-                    margin-bottom: 18px;
+                .card h2 {
+                    font-size: 16px;
+                    font-weight: 700;
+                    margin-bottom: 16px;
+                    color: var(--text);
                 }
-                .support-footer {
-                    margin-top: 30px;
-                    padding-top: 18px;
-                    border-top: 1px solid #e5e7eb;
-                    text-align: center;
+                .card-hint {
+                    background: var(--card-bg);
+                    border: 1px solid var(--border);
+                    border-radius: 10px;
+                    padding: 12px;
+                    margin-bottom: 12px;
+                }
+                label {
+                    display: block;
+                    font-size: 13px;
+                    font-weight: 600;
+                    margin-bottom: 5px;
+                    color: var(--muted);
+                }
+                input {
+                    width: 100%;
+                    padding: 11px 13px;
+                    margin-bottom: 12px;
+                    border: 1px solid var(--border);
+                    border-radius: 10px;
                     font-size: 14px;
-                    color: #6b7280;
+                    background: var(--input-bg);
+                    color: var(--text);
+                    transition: border-color 0.15s;
                 }
-                .support-footer a {
-                    color: #2563eb;
-                    text-decoration: none;
+                input:focus {
+                    outline: none;
+                    border-color: var(--primary);
                 }
-                .support-footer a:hover {
-                    text-decoration: underline;
+                .optional-tag {
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: var(--muted);
+                    background: var(--card-bg);
+                    border: 1px solid var(--border);
+                    padding: 2px 7px;
+                    border-radius: 4px;
+                    margin-left: 6px;
+                    text-transform: uppercase;
+                    vertical-align: middle;
                 }
-                @media (max-width: 800px) {
-                    .grid-2 {
-                        grid-template-columns: 1fr;
-                    }
+                .submit-btn {
+                    width: 100%;
+                    padding: 14px;
+                    background: var(--primary);
+                    color: white;
+                    border: none;
+                    border-radius: 12px;
+                    font-weight: 700;
+                    font-size: 16px;
+                    cursor: pointer;
+                    margin-top: 12px;
+                    transition: background 0.15s;
+                }
+                .submit-btn:hover { background: var(--primary-hover); }
+                .support-footer {
+                    margin-top: 32px;
+                    padding-top: 20px;
+                    border-top: 1px solid var(--border);
+                    text-align: center;
+                    font-size: 13px;
+                    color: var(--muted);
+                }
+                .support-footer a { color: var(--primary); text-decoration: none; }
+                .support-footer a:hover { text-decoration: underline; }
+                @media (max-width: 700px) {
+                    .grid-2 { grid-template-columns: 1fr; }
                 }
             </style>
+            <script>
+                (function() {
+                    var saved = localStorage.getItem('deskview-theme') || 'light';
+                    document.documentElement.setAttribute('data-theme', saved);
+                })();
+            </script>
         </head>
         <body>
-            <div class="box">
-                <h1>Komvera DeskView Ersteinrichtung</h1>
-                <p>
-                    Beim ersten Start wurden automatisch <strong>rooms.json</strong>, <strong>admins.json</strong>
-                    und <strong>config.json</strong> erstellt.
-                    Jetzt musst du einmalig den Master-Admin und das Session Secret festlegen.
+            <div class="page-wrap">
+                <div class="setup-header">
+                    <div class="setup-logo">
+                        ${logoExists
+                            ? `<img src="/logo.png" alt="Logo">`
+                            : `<span class="setup-logo-text">Komvera DeskView</span>`
+                        }
+                    </div>
+                    <button class="theme-btn" onclick="toggleTheme()">&#9790; Modus</button>
+                </div>
+
+                <h1>Ersteinrichtung</h1>
+                <p class="subtitle">
+                    Richte einmalig den Master-Admin und das Session Secret ein.<br>
+                    <strong>rooms.json</strong>, <strong>admins.json</strong> und <strong>config.json</strong> wurden bereits erstellt.
                 </p>
 
-                <div class="hint">
-                    <strong>Wofür ist das Session Secret da?</strong><br>
-                    Es schützt deine Login-Sessions. Es signiert die Session-Cookies, damit diese
-                    nicht manipuliert werden können.
+                <div class="notice">
+                    <strong>Session Secret:</strong> Schützt deine Login-Sessions durch Signierung der Session-Cookies.
+                    Der vorgeschlagene Wert ist sicher – du kannst ihn einfach übernehmen.
                 </div>
 
                 <form method="POST" action="/admin/setup">
                     <div class="grid-2">
                         <div class="card">
                             <h2>Master-Admin</h2>
-
                             <label>Benutzername</label>
-                            <input type="text" name="username" required>
-
+                            <input type="text" name="username" placeholder="z. B. admin" required autofocus>
+                            <label>Anzeigename <span class="optional-tag">optional</span></label>
+                            <input type="text" name="displayName" placeholder="z. B. Max Mustermann">
                             <label>Passwort</label>
-                            <input type="password" name="password" required>
-
+                            <input type="password" name="password" placeholder="Mindestens 8 Zeichen" required>
                             <label>Passwort wiederholen</label>
-                            <input type="password" name="confirmPassword" required>
+                            <input type="password" name="confirmPassword" placeholder="Passwort bestätigen" required>
                         </div>
 
                         <div class="card">
                             <h2>Session Secret</h2>
-
                             <label>Session Secret</label>
                             <input type="text" name="sessionSecret" value="${escapeHtml(generatedSecret)}" required>
+                            <div class="card-hint" style="font-size:13px; color:var(--muted); line-height:1.5;">
+                                Der vorgeschlagene Wert ist bereits kryptographisch stark.
+                                Du kannst ihn übernehmen oder durch einen eigenen ersetzen.
+                            </div>
 
-                            <p>
-                                Der vorgeschlagene Wert ist bereits stark genug.
-                                Du kannst ihn übernehmen oder durch einen eigenen langen Zufallswert ersetzen.
-                            </p>
+                            <h2 style="margin-top:16px;">Microsoft / Entra <span class="optional-tag">optional</span></h2>
+                            <label>Client ID</label>
+                            <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}" placeholder="Leer lassen falls nicht benötigt">
+                            <label>Tenant ID</label>
+                            <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}">
+                            <label>Client Secret</label>
+                            <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}">
+                            <label>Callback URL</label>
+                            <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}">
                         </div>
                     </div>
 
-                    <div class="card" style="margin-top:24px;">
-                        <h2>Microsoft / Entra (optional)</h2>
-
-                        <label>Client ID</label>
-                        <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}">
-
-                        <label>Tenant ID</label>
-                        <input type="text" name="tenantID" value="${escapeHtml(microsoftConfig.tenantID || '')}">
-
-                        <label>Client Secret</label>
-                        <input type="text" name="clientSecret" value="${escapeHtml(microsoftConfig.clientSecret || '')}">
-
-                        <label>Callback URL</label>
-                        <input type="text" name="callbackURL" value="${escapeHtml(microsoftConfig.callbackURL || '')}">
-                    </div>
-
-                    <button type="submit">Ersteinrichtung abschließen</button>
+                    <button type="submit" class="submit-btn">Ersteinrichtung abschließen &#8594;</button>
                 </form>
-                ${renderSupportFooter()}
+
+                <div class="support-footer">
+                    &copy; ${new Date().getFullYear()} Komvera IT GmbH &middot;
+                    <a href="https://www.komvera.de" target="_blank" rel="noopener noreferrer">www.komvera.de</a> &middot;
+                    <a href="mailto:info@komvera.de">info@komvera.de</a>
+                </div>
             </div>
+
+            <script>
+                function toggleTheme() {
+                    var current = document.documentElement.getAttribute('data-theme');
+                    var next = current === 'dark' ? 'light' : 'dark';
+                    document.documentElement.setAttribute('data-theme', next);
+                    localStorage.setItem('deskview-theme', next);
+                }
+            </script>
         </body>
         </html>
     `);
@@ -1667,6 +1850,7 @@ app.post('/admin/setup', async (req, res) => {
         }
 
         const username = String(req.body.username || '').trim();
+        const displayName = String(req.body.displayName || '').trim();
         const password = String(req.body.password || '');
         const confirmPassword = String(req.body.confirmPassword || '');
         const sessionSecret = String(req.body.sessionSecret || '').trim();
@@ -1701,6 +1885,7 @@ app.post('/admin/setup', async (req, res) => {
         admins = [
             normalizeAdmin({
                 username,
+                displayName,
                 passwordHash,
                 master: true,
                 permissions: []
@@ -1829,8 +2014,8 @@ app.get('/admin/login', (req, res) => {
                     gap: 12px;
                 }
                 .login-logo img {
-                    max-height: 52px;
-                    max-width: 200px;
+                    max-height: 90px;
+                    max-width: 300px;
                     width: auto;
                     height: auto;
                     object-fit: contain;
@@ -2026,7 +2211,7 @@ app.get('/admin', requireAdmin, requirePermission('dashboard.view'), (req, res) 
             <div>
                 <h1 class="page-title">Dashboard</h1>
                 <div class="muted">
-                    Angemeldet als ${escapeHtml(currentAdmin?.username || 'Admin')}
+                    Angemeldet als ${escapeHtml(currentAdmin?.displayName || currentAdmin?.username || 'Admin')}
                     ${currentAdmin?.master ? '<span class="badge badge-master">MASTER</span>' : ''}
                 </div>
             </div>
@@ -2581,8 +2766,8 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
     const adminRows = admins.map((admin) => `
         <tr>
             <td>
-                ${escapeHtml(admin.username)}
-                ${admin.master ? '<span class="badge badge-master">MASTER</span>' : ''}
+                <div style="font-weight:700;">${escapeHtml(admin.displayName || admin.username)}</div>
+                <div style="font-size:12px; color:var(--muted);">@${escapeHtml(admin.username)} ${admin.master ? '<span class="badge badge-master">MASTER</span>' : ''}</div>
             </td>
             <td>********</td>
             <td>${formatAdminPermissions(admin)}</td>
@@ -2630,6 +2815,9 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
                         <label>Benutzername</label>
                         <input type="text" name="username" required>
 
+                        <label>Anzeigename (Vorname Nachname)</label>
+                        <input type="text" name="displayName" placeholder="z. B. Max Mustermann">
+
                         <label>Passwort</label>
                         <input type="password" name="password" required>
 
@@ -2669,6 +2857,7 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
 app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'), async (req, res) => {
     try {
         const username = String(req.body.username || '').trim();
+        const displayName = String(req.body.displayName || '').trim();
         const password = String(req.body.password || '');
 
         let permissions = req.body.permissions || [];
@@ -2694,6 +2883,7 @@ app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'
 
         admins.push(normalizeAdmin({
             username,
+            displayName,
             passwordHash,
             master: false,
             permissions
@@ -2729,6 +2919,9 @@ app.get('/admin/admins/edit/:username', requireAdmin, requirePermission('admins.
             <form method="POST" action="/admin/admins/edit">
                 <input type="hidden" name="username" value="${escapeHtml(admin.username)}">
 
+                <label>Anzeigename (Vorname Nachname)</label>
+                <input type="text" name="displayName" value="${escapeHtml(admin.displayName || '')}" placeholder="z. B. Max Mustermann">
+
                 <label>Neues Passwort</label>
                 <input type="password" name="password" placeholder="Leer lassen = unverändert">
 
@@ -2759,6 +2952,7 @@ app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), a
         }
 
         const password = String(req.body.password || '');
+        const displayName = String(req.body.displayName || '').trim();
 
         let permissions = req.body.permissions || [];
         if (!Array.isArray(permissions)) {
@@ -2768,6 +2962,7 @@ app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), a
         permissions = permissions.filter(p => AVAILABLE_PERMISSIONS.includes(p));
 
         admin.permissions = permissions;
+        admin.displayName = displayName;
 
         if (password.trim()) {
             if (password.length < 8) {
@@ -3004,7 +3199,7 @@ app.get('/:room', (req, res) => {
                     z-index: 100;
                     box-shadow: 0 1px 8px rgba(0,0,0,0.05);
                 }
-                .header-logo { max-height: 38px; max-width: 160px; width: auto; height: auto; object-fit: contain; }
+                .header-logo { max-height: 52px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
                 .header-logo-text { font-size: 18px; font-weight: 700; color: var(--text); }
                 .header-right { display: flex; align-items: center; gap: 10px; }
                 .btn-theme {
@@ -3049,7 +3244,7 @@ app.get('/:room', (req, res) => {
                     text-align: center;
                 }
                 .card-logo { margin-bottom: 28px; }
-                .card-logo img { max-height: 52px; max-width: 200px; width: auto; height: auto; object-fit: contain; }
+                .card-logo img { max-height: 90px; max-width: 300px; width: auto; height: auto; object-fit: contain; }
                 .back-link {
                     display: inline-flex;
                     align-items: center;
@@ -3248,7 +3443,7 @@ header {
     z-index: 100;
     box-shadow: 0 1px 8px rgba(0,0,0,0.05);
 }
-.header-logo { max-height: 38px; max-width: 160px; width: auto; height: auto; object-fit: contain; }
+.header-logo { max-height: 52px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
 .header-logo-text { font-size: 18px; font-weight: 700; color: var(--text); }
 .header-right { display: flex; align-items: center; gap: 10px; }
 .btn-theme {
@@ -3293,7 +3488,7 @@ header {
     text-align: center;
 }
 .card-logo { margin-bottom: 24px; }
-.card-logo img { max-height: 48px; max-width: 180px; width: auto; height: auto; object-fit: contain; }
+.card-logo img { max-height: 80px; max-width: 260px; width: auto; height: auto; object-fit: contain; }
 .back-link {
     display: inline-flex;
     align-items: center;
