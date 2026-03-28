@@ -180,6 +180,7 @@ const DEFAULT_ROOMS = {
 
 const DEFAULT_CONFIG = {
     sessionSecret: '',
+    seatClearInterval: 'never',
     microsoft: {
         clientID: '',
         tenantID: '',
@@ -187,6 +188,42 @@ const DEFAULT_CONFIG = {
         callbackURL: ''
     }
 };
+
+const SEAT_CLEAR_OPTIONS = [
+    { value: 'never', label: 'Nie' },
+    { value: '1h',    label: '1 Stunde' },
+    { value: '2h',    label: '2 Stunden' },
+    { value: '8h',    label: '8 Stunden' },
+    { value: '24h',   label: '24 Stunden (1 Tag)' },
+    { value: '1w',    label: '1 Woche' },
+];
+
+function seatClearIntervalMs() {
+    switch (String(appConfig.seatClearInterval || 'never')) {
+        case '1h':  return 1 * 60 * 60 * 1000;
+        case '2h':  return 2 * 60 * 60 * 1000;
+        case '8h':  return 8 * 60 * 60 * 1000;
+        case '24h': return 24 * 60 * 60 * 1000;
+        case '1w':  return 7 * 24 * 60 * 60 * 1000;
+        default:    return null;
+    }
+}
+
+function runSeatAutoClear() {
+    const ms = seatClearIntervalMs();
+    if (!ms) return;
+    const now = Date.now();
+    let changed = false;
+    Object.values(rooms).forEach(room => {
+        room.seats.forEach((seat, i) => {
+            if (seat.name && seat.name !== 'Frei' && seat.since && (now - seat.since) >= ms) {
+                room.seats[i] = { name: 'Frei', title: '' };
+                changed = true;
+            }
+        });
+    });
+    if (changed) saveRooms();
+}
 
 /*
 ==================================================
@@ -539,10 +576,23 @@ function requirePermission(permission) {
 }
 
 function renderPermissionCheckboxes(selectedPermissions = []) {
-    return PERMISSION_GROUPS.map(group => `
+    const allKeys = PERMISSION_GROUPS.flatMap(g => g.permissions.map(p => p.key));
+    const allSelected = allKeys.every(k => selectedPermissions.includes(k));
+
+    const groupsHtml = PERMISSION_GROUPS.map((group, gi) => {
+        const groupKeys = group.permissions.map(p => p.key);
+        const groupSelected = groupKeys.every(k => selectedPermissions.includes(k));
+        return `
         <div class="perm-group">
-            <div class="perm-group-title">${escapeHtml(group.title)}</div>
-            <div class="perm-group-list">
+            <div class="perm-group-header" onclick="permToggleGroup(this)">
+                <span class="perm-group-arrow">&#9654;</span>
+                <span class="perm-group-title-text">${escapeHtml(group.title)}</span>
+                <button type="button" class="perm-group-all-btn" onclick="event.stopPropagation();permToggleGroupAll(this)"
+                    data-group="${gi}" ${groupSelected ? 'data-all="1"' : ''}>
+                    ${groupSelected ? 'Alle abwählen' : 'Alle wählen'}
+                </button>
+            </div>
+            <div class="perm-group-list" style="display:none;">
                 ${group.permissions.map(permission => `
                     <label class="perm-item">
                         <div class="perm-text">
@@ -559,6 +609,8 @@ function renderPermissionCheckboxes(selectedPermissions = []) {
                                 type="checkbox"
                                 name="permissions"
                                 value="${escapeHtml(permission.key)}"
+                                data-group="${gi}"
+                                onchange="permSyncGroupBtn(${gi})"
                                 ${selectedPermissions.includes(permission.key) ? 'checked' : ''}
                             >
                         </div>
@@ -566,7 +618,17 @@ function renderPermissionCheckboxes(selectedPermissions = []) {
                 `).join('')}
             </div>
         </div>
-    `).join('');
+    `}).join('');
+
+    return `
+        <div class="perm-global-bar">
+            <button type="button" class="perm-all-btn" id="permAllBtn" onclick="permToggleAll(this)"
+                ${allSelected ? 'data-all="1"' : ''}>
+                ${allSelected ? '&#10007; Alle abwählen' : '&#10003; Alle Berechtigungen'}
+            </button>
+        </div>
+        ${groupsHtml}
+    `;
 }
 
 function formatAdminPermissions(admin) {
@@ -957,24 +1019,83 @@ function renderAdminLayout(req, title, content) {
                 border-radius: 14px;
                 padding: 16px;
             }
+            .perm-global-bar {
+                margin-bottom: 12px;
+            }
+            .perm-all-btn {
+                background: var(--primary);
+                color: #fff;
+                border: none;
+                border-radius: 8px;
+                padding: 7px 14px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: background 0.15s, opacity 0.15s;
+            }
+            .perm-all-btn:hover { opacity: 0.88; }
             .perm-group {
-                margin-bottom: 18px;
+                margin-bottom: 6px;
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                overflow: hidden;
             }
             .perm-group:last-child {
                 margin-bottom: 0;
             }
-            .perm-group-title {
+            .perm-group-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 11px 14px;
+                cursor: pointer;
+                background: var(--perm-item-bg);
+                user-select: none;
+                transition: background 0.15s;
+            }
+            .perm-group-header:hover { background: var(--border); }
+            .perm-group-arrow {
+                font-size: 10px;
+                color: var(--muted);
+                transition: transform 0.2s;
+                display: inline-block;
+                flex-shrink: 0;
+            }
+            .perm-group-header.open .perm-group-arrow {
+                transform: rotate(90deg);
+            }
+            .perm-group-title-text {
                 font-size: 14px;
                 font-weight: 700;
-                margin-bottom: 10px;
                 color: var(--text);
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
+                flex: 1;
             }
+            .perm-group-all-btn {
+                background: none;
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--muted);
+                cursor: pointer;
+                transition: border-color 0.15s, color 0.15s;
+                white-space: nowrap;
+            }
+            .perm-group-all-btn:hover { border-color: var(--primary); color: var(--primary); }
             .perm-group-list {
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
+                gap: 0;
+                border-top: 1px solid var(--border);
+            }
+            .perm-item {
+                border-bottom: 1px solid var(--border);
+            }
+            .perm-item:last-child {
+                border-bottom: none;
             }
             .perm-item {
                 display: flex;
@@ -982,12 +1103,13 @@ function renderAdminLayout(req, title, content) {
                 justify-content: space-between;
                 gap: 16px;
                 background: var(--perm-item-bg);
-                border: 1px solid var(--border);
-                border-radius: 10px;
                 padding: 12px 14px;
                 margin: 0;
                 font-weight: normal;
-                transition: background 0.2s;
+                transition: background 0.15s;
+            }
+            .perm-item:hover {
+                background: var(--card-bg);
             }
             .perm-text {
                 flex: 1;
@@ -1267,6 +1389,54 @@ function renderAdminLayout(req, title, content) {
             function closeSidebar() {
                 document.querySelector('.sidebar').classList.remove('sidebar-open');
                 document.getElementById('sidebarOverlay').classList.remove('open');
+            }
+            function permToggleGroup(header) {
+                var list = header.nextElementSibling;
+                var isOpen = header.classList.toggle('open');
+                list.style.display = isOpen ? 'flex' : 'none';
+            }
+            function permToggleAll(btn) {
+                var isAll = btn.getAttribute('data-all') === '1';
+                var newState = !isAll;
+                document.querySelectorAll('input[name="permissions"]').forEach(function(cb) {
+                    cb.checked = newState;
+                });
+                btn.setAttribute('data-all', newState ? '1' : '');
+                btn.innerHTML = newState ? '&#10007; Alle abwählen' : '&#10003; Alle Berechtigungen';
+                document.querySelectorAll('.perm-group-all-btn').forEach(function(b) {
+                    b.setAttribute('data-all', newState ? '1' : '');
+                    b.textContent = newState ? 'Alle abwählen' : 'Alle wählen';
+                });
+            }
+            function permToggleGroupAll(btn) {
+                var gi = btn.getAttribute('data-group');
+                var isAll = btn.getAttribute('data-all') === '1';
+                var newState = !isAll;
+                document.querySelectorAll('input[name="permissions"][data-group="' + gi + '"]').forEach(function(cb) {
+                    cb.checked = newState;
+                });
+                btn.setAttribute('data-all', newState ? '1' : '');
+                btn.textContent = newState ? 'Alle abwählen' : 'Alle wählen';
+                permSyncGlobalBtn();
+            }
+            function permSyncGroupBtn(gi) {
+                var boxes = document.querySelectorAll('input[name="permissions"][data-group="' + gi + '"]');
+                var allChecked = Array.from(boxes).every(function(cb) { return cb.checked; });
+                var btn = document.querySelector('.perm-group-all-btn[data-group="' + gi + '"]');
+                if (btn) {
+                    btn.setAttribute('data-all', allChecked ? '1' : '');
+                    btn.textContent = allChecked ? 'Alle abwählen' : 'Alle wählen';
+                }
+                permSyncGlobalBtn();
+            }
+            function permSyncGlobalBtn() {
+                var allBoxes = document.querySelectorAll('input[name="permissions"]');
+                var allChecked = Array.from(allBoxes).every(function(cb) { return cb.checked; });
+                var btn = document.getElementById('permAllBtn');
+                if (btn) {
+                    btn.setAttribute('data-all', allChecked ? '1' : '');
+                    btn.innerHTML = allChecked ? '&#10007; Alle abwählen' : '&#10003; Alle Berechtigungen';
+                }
             }
         </script>
     </body>
@@ -2698,6 +2868,27 @@ app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (re
             <h2>Vorschlag für ein starkes Secret</h2>
             <div class="code-box">${escapeHtml(generateStrongSecret())}</div>
         </div>
+
+        <div class="card">
+            <h2>Automatisches Leeren der Sitzplätze</h2>
+            <p style="font-size:14px;color:var(--muted);margin-bottom:16px;line-height:1.5;">
+                Belegte Sitzplätze werden nach der gewählten Zeit automatisch freigegeben.
+                Der Zeitpunkt wird beim Einchecken gespeichert.
+            </p>
+            <form method="POST" action="/admin/system/seat-clear-interval">
+                <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+                    ${SEAT_CLEAR_OPTIONS.map(opt => `
+                        <label style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:normal;cursor:pointer;">
+                            <input type="radio" name="seatClearInterval" value="${opt.value}"
+                                ${(appConfig.seatClearInterval || 'never') === opt.value ? 'checked' : ''}
+                                style="width:16px;height:16px;accent-color:var(--primary);">
+                            ${escapeHtml(opt.label)}
+                        </label>
+                    `).join('')}
+                </div>
+                <button type="submit">Einstellung speichern</button>
+            </form>
+        </div>
     `;
 
     res.send(renderAdminLayout(req, 'System', content));
@@ -2731,6 +2922,25 @@ app.post('/admin/system/session-secret', requireAdmin, requirePermission('system
     } catch (err) {
         console.error(err);
         return res.status(500).send('Session Secret konnte nicht gespeichert werden');
+    }
+});
+
+app.post('/admin/system/seat-clear-interval', requireAdmin, requirePermission('system.settings'), (req, res) => {
+    try {
+        const value = String(req.body.seatClearInterval || 'never');
+        const valid = SEAT_CLEAR_OPTIONS.map(o => o.value);
+
+        if (!valid.includes(value)) {
+            return res.status(400).send('Ungültiger Wert');
+        }
+
+        appConfig.seatClearInterval = value;
+        saveAppConfig();
+
+        return res.redirect('/admin/system');
+    } catch (err) {
+        console.error(err);
+        return res.status(500).send('Einstellung konnte nicht gespeichert werden');
     }
 });
 
@@ -4049,7 +4259,8 @@ app.get('/auth/callback', async (req, res) => {
 
         room.seats[pendingSeat - 1] = {
             name: fullName,
-            title: jobTitle
+            title: jobTitle,
+            since: Date.now()
         };
 
         saveRooms();
@@ -4193,6 +4404,8 @@ START
         ensureSingleMasterAdmin();
         ensurePublicDir();
         refreshMsalClient();
+
+        setInterval(runSeatAutoClear, 60 * 1000);
 
         app.listen(PORT, '0.0.0.0', () => {
             console.log('Server läuft auf http://0.0.0.0:' + PORT);
