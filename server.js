@@ -1,8 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
-const passport = require('passport');
-const { OIDCStrategy } = require('passport-azure-ad');
+const { ConfidentialClientApplication } = require('@azure/msal-node');
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcrypt');
@@ -886,6 +885,31 @@ async function fetchMicrosoftUser(accessToken) {
 
 /*
 ==================================================
+MSAL – Microsoft Auth (ersetzt passport-azure-ad)
+==================================================
+*/
+let msalClient = null;
+
+function buildMsalClient() {
+    if (!hasMicrosoftConfig()) {
+        return null;
+    }
+
+    return new ConfidentialClientApplication({
+        auth: {
+            clientId: microsoftConfig.clientID,
+            authority: `https://login.microsoftonline.com/${microsoftConfig.tenantID}`,
+            clientSecret: microsoftConfig.clientSecret
+        }
+    });
+}
+
+function refreshMsalClient() {
+    msalClient = buildMsalClient();
+}
+
+/*
+==================================================
 SESSION
 ==================================================
 */
@@ -902,9 +926,6 @@ app.use(session({
         secure: false
     }
 }));
-
-app.use(passport.initialize());
-app.use(passport.session());
 
 /*
 ==================================================
@@ -931,84 +952,6 @@ app.use((req, res, next) => {
 
     return res.redirect('/admin/setup');
 });
-
-/*
-==================================================
-PASSPORT
-==================================================
-*/
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((user, done) => done(null, user));
-
-function configurePassportStrategy() {
-    if (!hasMicrosoftConfig()) {
-        return;
-    }
-
-    passport.use(
-        'azuread-openidconnect',
-        new OIDCStrategy(
-            {
-                identityMetadata: `https://login.microsoftonline.com/${microsoftConfig.tenantID}/v2.0/.well-known/openid-configuration`,
-                clientID: microsoftConfig.clientID,
-                clientSecret: microsoftConfig.clientSecret,
-                responseType: 'code',
-                responseMode: 'query',
-                redirectUrl: microsoftConfig.callbackURL,
-                allowHttpForRedirectUrl: false,
-                validateIssuer: false,
-                passReqToCallback: true,
-                scope: [
-                    'openid',
-                    'profile',
-                    'email',
-                    'offline_access',
-                    'https://graph.microsoft.com/User.Read'
-                ],
-                loggingLevel: 'warn',
-                nonceLifetime: 600,
-                nonceMaxAmount: 5,
-                useCookieInsteadOfSession: false
-            },
-            async (req, iss, sub, profile, accessToken, refreshToken, params, done) => {
-                try {
-                    const pendingRoom = req.session?.pendingRoom || null;
-                    const pendingSeat = Number.parseInt(req.session?.pendingSeat, 10);
-
-                    if (!pendingRoom || !getRoom(pendingRoom)) {
-                        return done(new Error('Kein gültiger Raum in der Session gefunden.'));
-                    }
-
-                    if (!isValidSeat(pendingSeat)) {
-                        return done(new Error('Kein gültiger Platz in der Session gefunden.'));
-                    }
-
-                    if (!accessToken) {
-                        return done(new Error('Kein Access Token von Microsoft erhalten.'));
-                    }
-
-                    const graphUser = await fetchMicrosoftUser(accessToken);
-
-                    const user = {
-                        displayName: graphUser.displayName || profile?.displayName || 'Unbekannt',
-                        givenName: graphUser.givenName || '',
-                        surname: graphUser.surname || '',
-                        jobTitle: graphUser.jobTitle || 'Mitarbeiter',
-                        mail: graphUser.mail || graphUser.userPrincipalName || '',
-                        pendingRoom,
-                        pendingSeat
-                    };
-
-                    return done(null, user);
-                } catch (error) {
-                    return done(error);
-                }
-            }
-        )
-    );
-}
-
-configurePassportStrategy();
 
 /*
 ==================================================
@@ -1292,6 +1235,7 @@ app.post('/admin/setup', async (req, res) => {
             callbackURL
         };
         saveAppConfig();
+        refreshMsalClient();
 
         return res.send(`
             <html lang="de">
@@ -2329,7 +2273,7 @@ app.post('/admin/microsoft/update', requireAdmin, requirePermission('microsoft.e
         };
 
         saveMicrosoftConfig();
-        configurePassportStrategy();
+        refreshMsalClient();
 
         return res.redirect('/admin/microsoft');
     } catch (err) {
@@ -2693,105 +2637,148 @@ h1 {
 
 /*
 ==================================================
-MICROSOFT LOGIN
+MICROSOFT LOGIN – MSAL (ersetzt passport-azure-ad)
 ==================================================
 */
-app.get('/auth/login', (req, res, next) => {
+app.get('/auth/login', (req, res) => {
     if (!hasMicrosoftConfig()) {
         return res.status(500).send('Microsoft / Entra ist noch nicht konfiguriert.');
     }
 
-    return passport.authenticate('azuread-openidconnect')(req, res, next);
+    if (!msalClient) {
+        refreshMsalClient();
+    }
+
+    if (!msalClient) {
+        return res.status(500).send('MSAL-Client konnte nicht initialisiert werden.');
+    }
+
+    const authCodeUrlParameters = {
+        scopes: ['openid', 'profile', 'email', 'https://graph.microsoft.com/User.Read'],
+        redirectUri: microsoftConfig.callbackURL,
+        state: crypto.randomBytes(16).toString('hex')
+    };
+
+    msalClient
+        .getAuthCodeUrl(authCodeUrlParameters)
+        .then((authUrl) => {
+            res.redirect(authUrl);
+        })
+        .catch((err) => {
+            console.error('MSAL getAuthCodeUrl Fehler:', err);
+            res.status(500).send('Microsoft Login konnte nicht gestartet werden.');
+        });
 });
 
-app.get(
-    '/auth/callback',
-    (req, res, next) => {
-        if (!hasMicrosoftConfig()) {
-            return res.redirect('/auth/error?msg=' + encodeURIComponent('Microsoft / Entra ist nicht konfiguriert.'));
-        }
-
-        return passport.authenticate('azuread-openidconnect', {
-            failureRedirect: '/auth/error?msg=' + encodeURIComponent('Microsoft Auth fehlgeschlagen')
-        })(req, res, next);
-    },
-    (req, res) => {
-        try {
-            if (!req.user) {
-                return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein Benutzer von Microsoft zurückgegeben.'));
-            }
-
-            const roomId = req.user.pendingRoom;
-            const seat = Number.parseInt(req.user.pendingSeat, 10);
-            const room = getRoom(roomId);
-
-            if (!room) {
-                return res.redirect('/auth/error?msg=' + encodeURIComponent('Raum nicht gefunden.'));
-            }
-
-            if (!isValidSeat(seat)) {
-                return res.redirect('/auth/error?msg=' + encodeURIComponent('Platz ungültig.'));
-            }
-
-            const fullName =
-                req.user.displayName ||
-                `${req.user.givenName || ''} ${req.user.surname || ''}`.trim() ||
-                'Unbekannt';
-
-            const jobTitle = req.user.jobTitle || 'Mitarbeiter';
-
-            room.seats[seat - 1] = {
-                name: fullName,
-                title: jobTitle
-            };
-
-            saveRooms();
-
-            delete req.session.pendingRoom;
-            delete req.session.pendingSeat;
-
-            return res.send(`
-                <html lang="de">
-                <head>
-                    <meta charset="UTF-8">
-                    <title>Erfolgreich eingetragen</title>
-                    <style>
-                        body {
-                            font-family: Arial, sans-serif;
-                            text-align: center;
-                            padding-top: 60px;
-                        }
-                        .support-footer {
-                            margin-top: 30px;
-                            padding-top: 18px;
-                            border-top: 1px solid #e5e7eb;
-                            text-align: center;
-                            font-size: 14px;
-                            color: #6b7280;
-                        }
-                        .support-footer a {
-                            color: #2563eb;
-                            text-decoration: none;
-                        }
-                        .support-footer a:hover {
-                            text-decoration: underline;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <h2>Erfolgreich eingetragen</h2>
-                    <p><strong>${escapeHtml(fullName)}</strong> sitzt jetzt auf Platz ${seat}.</p>
-                    <p>Status: ${escapeHtml(jobTitle)}</p>
-                    ${renderSupportFooter()}
-                </body>
-                </html>
-            `);
-        } catch (err) {
-            console.error('Fehler im Callback:', err);
-            return res.redirect('/auth/error?msg=' + encodeURIComponent('Benutzer konnte nicht gespeichert werden.'));
-        }
+app.get('/auth/callback', async (req, res) => {
+    if (!hasMicrosoftConfig()) {
+        return res.redirect('/auth/error?msg=' + encodeURIComponent('Microsoft / Entra ist nicht konfiguriert.'));
     }
-);
+
+    if (!msalClient) {
+        refreshMsalClient();
+    }
+
+    if (!msalClient) {
+        return res.redirect('/auth/error?msg=' + encodeURIComponent('MSAL-Client nicht verfügbar.'));
+    }
+
+    const code = req.query.code;
+
+    if (!code) {
+        return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein Autorisierungscode von Microsoft erhalten.'));
+    }
+
+    try {
+        const pendingRoom = req.session?.pendingRoom || null;
+        const pendingSeat = Number.parseInt(req.session?.pendingSeat, 10);
+
+        if (!pendingRoom || !getRoom(pendingRoom)) {
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein gültiger Raum in der Session gefunden.'));
+        }
+
+        if (!isValidSeat(pendingSeat)) {
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein gültiger Platz in der Session gefunden.'));
+        }
+
+        const tokenRequest = {
+            code: String(code),
+            scopes: ['openid', 'profile', 'email', 'https://graph.microsoft.com/User.Read'],
+            redirectUri: microsoftConfig.callbackURL
+        };
+
+        const tokenResponse = await msalClient.acquireTokenByCode(tokenRequest);
+
+        if (!tokenResponse || !tokenResponse.accessToken) {
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Kein Access Token von Microsoft erhalten.'));
+        }
+
+        const graphUser = await fetchMicrosoftUser(tokenResponse.accessToken);
+
+        const room = getRoom(pendingRoom);
+
+        if (!room) {
+            return res.redirect('/auth/error?msg=' + encodeURIComponent('Raum nicht mehr vorhanden.'));
+        }
+
+        const fullName =
+            graphUser.displayName ||
+            `${graphUser.givenName || ''} ${graphUser.surname || ''}`.trim() ||
+            'Unbekannt';
+
+        const jobTitle = graphUser.jobTitle || 'Mitarbeiter';
+
+        room.seats[pendingSeat - 1] = {
+            name: fullName,
+            title: jobTitle
+        };
+
+        saveRooms();
+
+        delete req.session.pendingRoom;
+        delete req.session.pendingSeat;
+
+        return res.send(`
+            <html lang="de">
+            <head>
+                <meta charset="UTF-8">
+                <title>Erfolgreich eingetragen</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        text-align: center;
+                        padding-top: 60px;
+                    }
+                    .support-footer {
+                        margin-top: 30px;
+                        padding-top: 18px;
+                        border-top: 1px solid #e5e7eb;
+                        text-align: center;
+                        font-size: 14px;
+                        color: #6b7280;
+                    }
+                    .support-footer a {
+                        color: #2563eb;
+                        text-decoration: none;
+                    }
+                    .support-footer a:hover {
+                        text-decoration: underline;
+                    }
+                </style>
+            </head>
+            <body>
+                <h2>Erfolgreich eingetragen</h2>
+                <p><strong>${escapeHtml(fullName)}</strong> sitzt jetzt auf Platz ${pendingSeat}.</p>
+                <p>Status: ${escapeHtml(jobTitle)}</p>
+                ${renderSupportFooter()}
+            </body>
+            </html>
+        `);
+    } catch (err) {
+        console.error('Fehler im Auth-Callback:', err);
+        return res.redirect('/auth/error?msg=' + encodeURIComponent('Benutzer konnte nicht gespeichert werden.'));
+    }
+});
 
 app.get('/auth/error', (req, res) => {
     const msg = req.query.msg ? String(req.query.msg) : 'Unbekannter Fehler';
@@ -2886,6 +2873,7 @@ START
     try {
         ensureSingleMasterAdmin();
         ensurePublicDir();
+        refreshMsalClient();
 
         app.listen(PORT, '0.0.0.0', () => {
             console.log('Server läuft auf http://0.0.0.0:' + PORT);
