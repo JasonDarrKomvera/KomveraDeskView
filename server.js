@@ -1950,6 +1950,8 @@ app.get('/admin/setup', (req, res) => {
         return res.redirect('/admin/login');
     }
 
+    getCsrfToken(req);
+    req.session.save(() => {
     const generatedSecret = generateStrongSecret();
 
     const logoExists = fs.existsSync(LOGO_FILE);
@@ -2227,6 +2229,7 @@ app.get('/admin/setup', (req, res) => {
         </body>
         </html>
     `);
+    }); // session.save
 });
 
 app.post('/admin/setup', setupLimiter, requireCsrf, async (req, res) => {
@@ -2458,6 +2461,8 @@ app.get('/admin/login', (req, res) => {
         return res.redirect('/admin/setup');
     }
 
+    getCsrfToken(req);
+    req.session.save(() => {
     const logoExists = fs.existsSync(LOGO_FILE);
     res.send(`
         <!DOCTYPE html>
@@ -2700,6 +2705,7 @@ app.get('/admin/login', (req, res) => {
         </body>
         </html>
     `);
+    }); // session.save
 });
 
 app.post('/admin/login', loginLimiter, requireCsrf, async (req, res) => {
