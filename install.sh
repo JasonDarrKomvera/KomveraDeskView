@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Wenn via Pipe ausgefuehrt (z.B. curl | bash): Bash puffert das Script
-# komplett – cat bekommt dann nichts mehr. Stattdessen neu von GitHub laden
-# und als echte Datei ausfuehren, damit exec </dev/tty funktioniert.
-if [ ! -t 0 ] && [ -z "$_INSTALL_REEXEC" ]; then
-    export _INSTALL_REEXEC=1
-    TMPFILE=$(mktemp /tmp/komvera-install-XXXXXX.sh)
-    curl -fsSL "https://raw.githubusercontent.com/JasonDarrKomvera/KomveraDeskView/main/install.sh" -o "$TMPFILE"
-    exec bash "$TMPFILE"
-fi
 
 APP_DIR="/opt/komvera-deskview"
 SERVICE_NAME="komvera-deskview"
