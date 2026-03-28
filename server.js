@@ -287,6 +287,7 @@ if (!appConfig || typeof appConfig !== 'object') {
 if (typeof appConfig.sessionSecret !== 'string') {
     appConfig.sessionSecret = '';
 }
+appConfig.sessionSecret = decryptValue(appConfig.sessionSecret);
 
 if (!appConfig.microsoft || typeof appConfig.microsoft !== 'object') {
     appConfig.microsoft = deepClone(DEFAULT_CONFIG.microsoft);
@@ -385,6 +386,7 @@ function saveAdmins() {
 function saveAppConfig() {
     const toWrite = {
         ...appConfig,
+        sessionSecret: encryptValue(appConfig.sessionSecret || ''),
         microsoft: {
             ...microsoftConfig,
             clientSecret: encryptValue(microsoftConfig.clientSecret || '')
@@ -2227,19 +2229,25 @@ app.get('/admin/login', (req, res) => {
                     position: absolute;
                     right: 0;
                     top: 0;
+                    width: auto;
                     height: 100%;
+                    margin: 0;
                     padding: 0 13px;
                     background: none;
+                    color: var(--muted);
                     border: none;
                     border-left: 1px solid var(--border);
                     border-radius: 0 10px 10px 0;
                     cursor: pointer;
-                    color: var(--muted);
                     font-size: 16px;
                     display: flex;
                     align-items: center;
+                    transition: color 0.15s;
                 }
-                .eye-btn:hover { color: var(--primary); }
+                .eye-btn:hover {
+                    color: var(--primary);
+                    background: rgba(0,0,0,0.04);
+                }
             </style>
             <script>
                 (function() {
