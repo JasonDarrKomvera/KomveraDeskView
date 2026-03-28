@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -e
 
+# Wenn via Pipe ausgefuehrt (z.B. curl | bash): Script zuerst komplett
+# in eine Temp-Datei einlesen und dann neu starten – sonst bricht exec </dev/tty
+# die Pipe ab bevor das gesamte Script gelesen wurde.
+if [ ! -t 0 ] && [ -z "$_INSTALL_REEXEC" ]; then
+    export _INSTALL_REEXEC=1
+    TMPFILE=$(mktemp /tmp/komvera-install-XXXXXX.sh)
+    cat > "$TMPFILE"
+    chmod +x "$TMPFILE"
+    exec bash "$TMPFILE"
+fi
+
 APP_DIR="/opt/komvera-deskview"
 SERVICE_NAME="komvera-deskview"
 GIT_REPO="https://github.com/JasonDarrKomvera/KomveraDeskView.git"
