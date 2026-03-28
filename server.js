@@ -1525,15 +1525,10 @@ TRMNL PUSH
 ==================================================
 */
 async function pushToTrmnl(room) {
-    if (!room.trmnlUuid || !room.trmnlApiKey) {
-        console.log(`TRMNL Push übersprungen (${room.id}): UUID oder API Key fehlt`);
-        return;
-    }
+    if (!room.trmnlUuid || !room.trmnlApiKey) return;
     try {
         const payload = renderRoomApiJson(room);
-        const url = `https://usetrmnl.com/api/custom_plugins/${encodeURIComponent(room.trmnlUuid)}`;
-        console.log(`TRMNL Push → ${url}`);
-        const res = await fetch(url, {
+        await fetch(`https://usetrmnl.com/api/custom_plugins/${encodeURIComponent(room.trmnlUuid)}`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${room.trmnlApiKey}`,
@@ -1541,8 +1536,6 @@ async function pushToTrmnl(room) {
             },
             body: JSON.stringify({ merge_variables: payload })
         });
-        const text = await res.text();
-        console.log(`TRMNL Push Antwort (${room.id}): ${res.status} ${text}`);
     } catch (err) {
         console.error(`TRMNL Push Fehler (${room.id}):`, err.message);
     }
@@ -2524,6 +2517,8 @@ app.get('/admin/login', (req, res) => {
     getCsrfToken(req);
     req.session.save(() => {
     const logoExists = fs.existsSync(LOGO_FILE);
+    const loginError = String(req.query.error || '');
+    const loginErrorField = String(req.query.field || '');
     res.send(`
         <!DOCTYPE html>
         <html lang="de">
@@ -2713,6 +2708,15 @@ app.get('/admin/login', (req, res) => {
                     color: var(--primary);
                     background: rgba(0,0,0,0.04);
                 }
+                .field-error {
+                    color: #dc2626;
+                    font-size: 13px;
+                    margin-top: 4px;
+                    display: block;
+                }
+                .input-error {
+                    border-color: #dc2626 !important;
+                }
             </style>
             <script>
                 (function() {
@@ -2734,12 +2738,14 @@ app.get('/admin/login', (req, res) => {
                 <form method="POST" action="/admin/login">
                     ${csrfField(req)}
                     <label for="username">Benutzername</label>
-                    <input type="text" id="username" name="username" placeholder="Benutzername" required autofocus>
+                    <input type="text" id="username" name="username" placeholder="Benutzername" required autofocus class="${loginErrorField === 'username' ? 'input-error' : ''}">
+                    ${loginErrorField === 'username' ? `<span class="field-error">${escapeHtml(loginError)}</span>` : ''}
                     <label for="password">Passwort</label>
                     <div class="field-wrap">
-                        <input type="password" id="password" name="password" placeholder="Passwort" required>
+                        <input type="password" id="password" name="password" placeholder="Passwort" required class="${loginErrorField === 'password' ? 'input-error' : ''}">
                         <button type="button" class="eye-btn" data-eye="password" onclick="toggleVis('password')">&#128065;</button>
                     </div>
+                    ${loginErrorField === 'password' ? `<span class="field-error">${escapeHtml(loginError)}</span>` : ''}
                     <button type="submit">Anmelden</button>
                 </form>
                 <div class="home-link">
@@ -2780,13 +2786,13 @@ app.post('/admin/login', loginLimiter, requireCsrf, async (req, res) => {
         const admin = getAdminUser(username);
 
         if (!admin || !admin.passwordHash) {
-            return res.status(401).send('Falsche Zugangsdaten');
+            return res.redirect('/admin/login?error=Falsche+Zugangsdaten&field=username');
         }
 
         const valid = await bcrypt.compare(password, admin.passwordHash);
 
         if (!valid) {
-            return res.status(401).send('Falsche Zugangsdaten');
+            return res.redirect('/admin/login?error=Falsches+Passwort&field=password');
         }
 
         req.session.regenerate((err) => {
@@ -2870,6 +2876,8 @@ MEIN KONTO
 */
 app.get('/admin/account', requireAdmin, (req, res) => {
     const admin = getCurrentAdmin(req);
+    const accError = String(req.query.error || '');
+    const accField = String(req.query.field || '');
 
     const content = `
         <div class="topbar">
@@ -2889,19 +2897,22 @@ app.get('/admin/account', requireAdmin, (req, res) => {
                     ${csrfField(req)}
                     <label>Aktuelles Passwort</label>
                     <div class="field-wrap">
-                        <input type="password" id="acc_cur" name="currentPassword" required>
+                        <input type="password" id="acc_cur" name="currentPassword" required class="${accField === 'currentPassword' ? 'input-error' : ''}">
                         <button type="button" class="eye-btn" data-eye="acc_cur" onclick="toggleVis('acc_cur')">&#128065;</button>
                     </div>
+                    ${accField === 'currentPassword' ? `<span class="field-error">${escapeHtml(accError)}</span>` : ''}
                     <label>Neues Passwort</label>
                     <div class="field-wrap">
-                        <input type="password" id="acc_new" name="newPassword" required>
+                        <input type="password" id="acc_new" name="newPassword" required class="${accField === 'newPassword' ? 'input-error' : ''}">
                         <button type="button" class="eye-btn" data-eye="acc_new" onclick="toggleVis('acc_new')">&#128065;</button>
                     </div>
+                    ${accField === 'newPassword' ? `<span class="field-error">${escapeHtml(accError)}</span>` : ''}
                     <label>Neues Passwort wiederholen</label>
                     <div class="field-wrap">
-                        <input type="password" id="acc_con" name="confirmPassword" required>
+                        <input type="password" id="acc_con" name="confirmPassword" required class="${accField === 'confirmPassword' ? 'input-error' : ''}">
                         <button type="button" class="eye-btn" data-eye="acc_con" onclick="toggleVis('acc_con')">&#128065;</button>
                     </div>
+                    ${accField === 'confirmPassword' ? `<span class="field-error">${escapeHtml(accError)}</span>` : ''}
                     <button type="submit">Passwort ändern</button>
                 </form>
             </div>
@@ -2920,20 +2931,20 @@ app.post('/admin/account/password', requireAdmin, requireCsrf, async (req, res) 
         const confirmPassword = String(req.body.confirmPassword || '');
 
         if (!currentPassword || !newPassword || !confirmPassword) {
-            return res.status(400).send('Bitte alle Felder ausfüllen');
+            return res.redirect('/admin/account?error=Bitte+alle+Felder+ausf%C3%BCllen&field=currentPassword');
         }
 
         if (newPassword !== confirmPassword) {
-            return res.status(400).send('Die neuen Passwörter stimmen nicht überein');
+            return res.redirect('/admin/account?error=Die+neuen+Passw%C3%B6rter+stimmen+nicht+%C3%BCberein&field=confirmPassword');
         }
 
         if (newPassword.length < 8) {
-            return res.status(400).send('Das neue Passwort muss mindestens 8 Zeichen lang sein');
+            return res.redirect('/admin/account?error=Das+neue+Passwort+muss+mindestens+8+Zeichen+lang+sein&field=newPassword');
         }
 
         const valid = await bcrypt.compare(currentPassword, admin.passwordHash);
         if (!valid) {
-            return res.status(400).send('Aktuelles Passwort ist falsch');
+            return res.redirect('/admin/account?error=Aktuelles+Passwort+ist+falsch&field=currentPassword');
         }
 
         admin.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
