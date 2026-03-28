@@ -8,6 +8,8 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = 3000;
@@ -16,6 +18,26 @@ const BCRYPT_ROUNDS = 12;
 app.use((req, res, next) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     next();
+});
+
+app.use(helmet({
+    contentSecurityPolicy: false
+}));
+
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Zu viele Login-Versuche. Bitte 15 Minuten warten.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const setupLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 5,
+    message: 'Zu viele Setup-Versuche. Bitte 1 Stunde warten.',
+    standardHeaders: true,
+    legacyHeaders: false,
 });
 
 /*
@@ -383,6 +405,30 @@ function escapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+}
+
+/*
+==================================================
+CSRF
+==================================================
+*/
+function getCsrfToken(req) {
+    if (!req.session.csrfToken) {
+        req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+    return req.session.csrfToken;
+}
+
+function csrfField(req) {
+    return `<input type="hidden" name="_csrf" value="${getCsrfToken(req)}">`;
+}
+
+function requireCsrf(req, res, next) {
+    const token = String(req.body._csrf || '');
+    if (!token || token !== req.session.csrfToken) {
+        return res.status(403).send('Ungültige Anfrage (CSRF-Fehler). Bitte Seite neu laden.');
+    }
+    next();
 }
 
 function ensurePublicDir() {
@@ -2125,6 +2171,7 @@ app.get('/admin/setup', (req, res) => {
                 </div>
 
                 <form method="POST" action="/admin/setup">
+                    ${csrfField(req)}
                     <div class="grid-2">
                         <div class="card">
                             <h2>Master-Admin</h2>
@@ -2182,7 +2229,7 @@ app.get('/admin/setup', (req, res) => {
     `);
 });
 
-app.post('/admin/setup', async (req, res) => {
+app.post('/admin/setup', setupLimiter, requireCsrf, async (req, res) => {
     try {
         if (!isSetupRequired()) {
             return res.redirect('/admin/login');
@@ -2620,6 +2667,7 @@ app.get('/admin/login', (req, res) => {
                 </div>
                 <h2>Admin Login</h2>
                 <form method="POST" action="/admin/login">
+                    ${csrfField(req)}
                     <label for="username">Benutzername</label>
                     <input type="text" id="username" name="username" placeholder="Benutzername" required autofocus>
                     <label for="password">Passwort</label>
@@ -2654,7 +2702,7 @@ app.get('/admin/login', (req, res) => {
     `);
 });
 
-app.post('/admin/login', async (req, res) => {
+app.post('/admin/login', loginLimiter, requireCsrf, async (req, res) => {
     try {
         if (isSetupRequired()) {
             return res.redirect('/admin/setup');
@@ -2675,9 +2723,12 @@ app.post('/admin/login', async (req, res) => {
             return res.status(401).send('Falsche Zugangsdaten');
         }
 
-        req.session.adminAuthenticated = true;
-        req.session.adminUsername = admin.username;
-        return res.redirect('/admin');
+        req.session.regenerate((err) => {
+            if (err) return res.status(500).send('Login fehlgeschlagen');
+            req.session.adminAuthenticated = true;
+            req.session.adminUsername = admin.username;
+            return res.redirect('/admin');
+        });
     } catch (err) {
         console.error(err);
         return res.status(500).send('Login fehlgeschlagen');
@@ -2769,6 +2820,7 @@ app.get('/admin/account', requireAdmin, (req, res) => {
             <div class="card">
                 <h2>Eigenes Passwort ändern</h2>
                 <form method="POST" action="/admin/account/password">
+                    ${csrfField(req)}
                     <label>Aktuelles Passwort</label>
                     <div class="field-wrap">
                         <input type="password" id="acc_cur" name="currentPassword" required>
@@ -2793,7 +2845,7 @@ app.get('/admin/account', requireAdmin, (req, res) => {
     res.send(renderAdminLayout(req, 'Mein Konto', content));
 });
 
-app.post('/admin/account/password', requireAdmin, async (req, res) => {
+app.post('/admin/account/password', requireAdmin, requireCsrf, async (req, res) => {
     try {
         const admin = getCurrentAdmin(req);
 
@@ -2855,6 +2907,7 @@ app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (re
             </div>
 
             <form method="POST" action="/admin/system/session-secret">
+                ${csrfField(req)}
                 <label>Neues Session Secret</label>
                 <div class="field-wrap">
                     <input type="password" id="sys_secret" name="sessionSecret" value="${escapeHtml(appConfig.sessionSecret || '')}" required>
@@ -2876,6 +2929,7 @@ app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (re
                 Der Zeitpunkt wird beim Einchecken gespeichert.
             </p>
             <form method="POST" action="/admin/system/seat-clear-interval">
+                ${csrfField(req)}
                 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
                     ${SEAT_CLEAR_OPTIONS.map(opt => `
                         <label style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:normal;cursor:pointer;">
@@ -2894,7 +2948,7 @@ app.get('/admin/system', requireAdmin, requirePermission('system.settings'), (re
     res.send(renderAdminLayout(req, 'System', content));
 });
 
-app.post('/admin/system/session-secret', requireAdmin, requirePermission('system.settings'), (req, res) => {
+app.post('/admin/system/session-secret', requireAdmin, requirePermission('system.settings'), requireCsrf, (req, res) => {
     try {
         const newSecret = String(req.body.sessionSecret || '').trim();
 
@@ -2925,7 +2979,7 @@ app.post('/admin/system/session-secret', requireAdmin, requirePermission('system
     }
 });
 
-app.post('/admin/system/seat-clear-interval', requireAdmin, requirePermission('system.settings'), (req, res) => {
+app.post('/admin/system/seat-clear-interval', requireAdmin, requirePermission('system.settings'), requireCsrf, (req, res) => {
     try {
         const value = String(req.body.seatClearInterval || 'never');
         const valid = SEAT_CLEAR_OPTIONS.map(o => o.value);
@@ -2974,6 +3028,7 @@ app.get('/admin/logo', requireAdmin, requirePermission('system.logo'), (req, res
             </div>
 
             <form method="POST" action="/admin/logo/upload" enctype="multipart/form-data">
+                ${csrfField(req)}
                 <label>Neues Logo hochladen</label>
                 <input type="file" name="logo" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
                 <button type="submit">Logo hochladen</button>
@@ -2988,6 +3043,7 @@ app.post(
     '/admin/logo/upload',
     requireAdmin,
     requirePermission('system.logo'),
+    requireCsrf,
     (req, res, next) => {
         upload.single('logo')(req, res, function (err) {
             if (err) {
@@ -3064,6 +3120,7 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
                         hasPermission(req, 'rooms.clearSeat')
                             ? `
                             <form method="POST" action="/admin/clear-seat" class="inline-form">
+                                ${csrfField(req)}
                                 <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
                                 <input type="hidden" name="seat" value="${index + 1}">
                                 <button type="submit" class="btn-danger">Leeren</button>
@@ -3083,6 +3140,7 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
                     hasPermission(req, 'rooms.edit')
                         ? `
                         <form method="POST" action="/admin/update-room">
+                            ${csrfField(req)}
                             <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
 
                             <label>Abteilung</label>
@@ -3104,6 +3162,7 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
                     hasPermission(req, 'rooms.delete')
                         ? `
                         <form method="POST" action="/admin/delete-room" style="margin-top:16px;">
+                            ${csrfField(req)}
                             <input type="hidden" name="roomId" value="${escapeHtml(room.id)}">
                             <button type="submit" class="btn-danger">Raum löschen</button>
                         </form>
@@ -3139,6 +3198,7 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
                 <div class="card">
                     <h2>Neuen Raum anlegen</h2>
                     <form method="POST" action="/admin/create-room">
+                        ${csrfField(req)}
                         <label>Raum-ID</label>
                         <input type="text" name="roomId" placeholder="z. B. room3" required>
 
@@ -3161,7 +3221,7 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
     res.send(renderAdminLayout(req, 'Räume', content));
 });
 
-app.post('/admin/create-room', requireAdmin, requirePermission('rooms.create'), (req, res) => {
+app.post('/admin/create-room', requireAdmin, requirePermission('rooms.create'), requireCsrf, (req, res) => {
     try {
         const roomId = String(req.body.roomId || '').trim();
         const abteilung = String(req.body.abteilung || '').trim();
@@ -3195,7 +3255,7 @@ app.post('/admin/create-room', requireAdmin, requirePermission('rooms.create'), 
     }
 });
 
-app.post('/admin/update-room', requireAdmin, requirePermission('rooms.edit'), (req, res) => {
+app.post('/admin/update-room', requireAdmin, requirePermission('rooms.edit'), requireCsrf, (req, res) => {
     try {
         const roomId = String(req.body.roomId || '').trim();
         const room = getRoom(roomId);
@@ -3215,7 +3275,7 @@ app.post('/admin/update-room', requireAdmin, requirePermission('rooms.edit'), (r
     }
 });
 
-app.post('/admin/delete-room', requireAdmin, requirePermission('rooms.delete'), (req, res) => {
+app.post('/admin/delete-room', requireAdmin, requirePermission('rooms.delete'), requireCsrf, (req, res) => {
     try {
         const roomId = String(req.body.roomId || '').trim();
 
@@ -3233,7 +3293,7 @@ app.post('/admin/delete-room', requireAdmin, requirePermission('rooms.delete'), 
     }
 });
 
-app.post('/admin/clear-seat', requireAdmin, requirePermission('rooms.clearSeat'), (req, res) => {
+app.post('/admin/clear-seat', requireAdmin, requirePermission('rooms.clearSeat'), requireCsrf, (req, res) => {
     try {
         const roomId = String(req.body.roomId || '').trim();
         const seat = Number.parseInt(req.body.seat, 10);
@@ -3331,6 +3391,7 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
                     !admin.master && hasPermission(req, 'admins.delete')
                         ? `
                         <form method="POST" action="/admin/admins/delete" class="inline-form" style="margin-left:8px;">
+                            ${csrfField(req)}
                             <input type="hidden" name="username" value="${escapeHtml(admin.username)}">
                             <button type="submit" class="btn-danger">Löschen</button>
                         </form>
@@ -3357,6 +3418,7 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
                         Es kann nur genau einen Master-Admin geben. Neue Admins werden immer als normale Admins erstellt.
                     </div>
                     <form method="POST" action="/admin/admins/create">
+                        ${csrfField(req)}
                         <label>Benutzername</label>
                         <input type="text" name="username" required>
 
@@ -3402,7 +3464,7 @@ app.get('/admin/admins', requireAdmin, requirePermission('admins.view'), (req, r
     res.send(renderAdminLayout(req, 'Admins', content));
 });
 
-app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'), async (req, res) => {
+app.post('/admin/admins/create', requireAdmin, requirePermission('admins.create'), requireCsrf, async (req, res) => {
     try {
         const username = String(req.body.username || '').trim();
         const displayName = String(req.body.displayName || '').trim();
@@ -3465,6 +3527,7 @@ app.get('/admin/admins/edit/:username', requireAdmin, requirePermission('admins.
         <div class="card">
             <h2>${escapeHtml(admin.username)}</h2>
             <form method="POST" action="/admin/admins/edit">
+                ${csrfField(req)}
                 <input type="hidden" name="username" value="${escapeHtml(admin.username)}">
 
                 <label>Anzeigename (Vorname Nachname)</label>
@@ -3489,7 +3552,7 @@ app.get('/admin/admins/edit/:username', requireAdmin, requirePermission('admins.
     res.send(renderAdminLayout(req, 'Admin bearbeiten', content));
 });
 
-app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), async (req, res) => {
+app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), requireCsrf, async (req, res) => {
     try {
         const username = String(req.body.username || '').trim();
         const admin = getAdminUser(username);
@@ -3530,7 +3593,7 @@ app.post('/admin/admins/edit', requireAdmin, requirePermission('admins.edit'), a
     }
 });
 
-app.post('/admin/admins/delete', requireAdmin, requirePermission('admins.delete'), (req, res) => {
+app.post('/admin/admins/delete', requireAdmin, requirePermission('admins.delete'), requireCsrf, (req, res) => {
     try {
         const username = String(req.body.username || '').trim();
         const admin = getAdminUser(username);
@@ -3571,6 +3634,7 @@ app.get('/admin/microsoft', requireAdmin, requirePermission('microsoft.view'), (
                 hasPermission(req, 'microsoft.edit')
                     ? `
                     <form method="POST" action="/admin/microsoft/update">
+                        ${csrfField(req)}
                         <label>Client ID</label>
                         <input type="text" name="clientID" value="${escapeHtml(microsoftConfig.clientID || '')}" required>
 
@@ -3602,7 +3666,7 @@ app.get('/admin/microsoft', requireAdmin, requirePermission('microsoft.view'), (
     res.send(renderAdminLayout(req, 'Microsoft', content));
 });
 
-app.post('/admin/microsoft/update', requireAdmin, requirePermission('microsoft.edit'), (req, res) => {
+app.post('/admin/microsoft/update', requireAdmin, requirePermission('microsoft.edit'), requireCsrf, (req, res) => {
     try {
         const clientID = String(req.body.clientID || '').trim();
         const tenantID = String(req.body.tenantID || '').trim();
