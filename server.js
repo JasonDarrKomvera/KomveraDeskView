@@ -1020,31 +1020,41 @@ function renderAdminLayout(req, title, content) {
             .perm-tooltip {
                 display: none;
                 position: absolute;
-                left: 50%;
-                bottom: calc(100% + 8px);
-                transform: translateX(-50%);
+                left: calc(100% + 10px);
+                top: 50%;
+                transform: translateY(-50%);
                 background: var(--surface);
                 border: 1px solid var(--border);
                 color: var(--text);
                 font-size: 13px;
                 font-weight: 400;
                 line-height: 1.5;
-                padding: 8px 12px;
+                padding: 9px 13px;
                 border-radius: 10px;
                 white-space: normal;
-                width: 220px;
-                box-shadow: 0 6px 20px rgba(0,0,0,0.18);
-                z-index: 10;
+                width: 210px;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+                z-index: 20;
                 pointer-events: none;
+            }
+            .perm-tooltip::before {
+                content: '';
+                position: absolute;
+                right: 100%;
+                top: 50%;
+                transform: translateY(-50%);
+                border: 6px solid transparent;
+                border-right-color: var(--border);
             }
             .perm-tooltip::after {
                 content: '';
                 position: absolute;
-                top: 100%;
-                left: 50%;
-                transform: translateX(-50%);
-                border: 6px solid transparent;
-                border-top-color: var(--border);
+                right: 100%;
+                top: 50%;
+                transform: translateY(-50%);
+                border: 5px solid transparent;
+                border-right-color: var(--surface);
+                margin-right: -1px;
             }
             .perm-info-wrap:hover .perm-tooltip,
             .perm-info-wrap:focus-within .perm-tooltip {
@@ -1331,7 +1341,9 @@ ensureSingleMasterAdmin();
 const bootstrapSessionSecret = generateStrongSecret();
 
 app.use(session({
-    secret: String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret,
+    secret: (req, callback) => {
+        callback(null, String(appConfig.sessionSecret || '').trim() || bootstrapSessionSecret);
+    },
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -2202,10 +2214,6 @@ app.post('/admin/setup', async (req, res) => {
                     <h2>Ersteinrichtung abgeschlossen</h2>
                     <div class="success-box">
                         Master-Admin und Konfiguration wurden erfolgreich gespeichert.
-                    </div>
-                    <div class="warn-box">
-                        <strong>&#9888; Server-Neustart erforderlich</strong>
-                        Damit das neue Session Secret aktiv verwendet wird, starte den Server bitte einmal neu.
                     </div>
                     <a href="/admin/login" class="login-btn">Zum Login &rarr;</a>
                     ${renderSupportFooter()}
