@@ -1519,6 +1519,28 @@ function renderRoomApiJson(room) {
     return result;
 }
 
+/*
+==================================================
+TRMNL PUSH
+==================================================
+*/
+async function pushToTrmnl(room) {
+    if (!room.trmnlUuid || !room.trmnlApiKey) return;
+    try {
+        const payload = renderRoomApiJson(room);
+        await fetch(`https://usetrmnl.com/api/custom_plugins/${encodeURIComponent(room.trmnlUuid)}`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${room.trmnlApiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ merge_variables: payload })
+        });
+    } catch (err) {
+        console.error(`TRMNL Push Fehler (${room.id}):`, err.message);
+    }
+}
+
 async function fetchMicrosoftUser(accessToken) {
     const response = await fetch(
         'https://graph.microsoft.com/v1.0/me?$select=displayName,givenName,surname,jobTitle,mail,userPrincipalName',
@@ -3185,6 +3207,12 @@ app.get('/admin/rooms', requireAdmin, requirePermission('rooms.view'), (req, res
                             <label>Raumnummer</label>
                             <input type="text" name="roomnumber" value="${escapeHtml(room.roomnumber)}" required>
 
+                            <label>TRMNL Plugin UUID <span style="font-weight:400;opacity:.6;">(optional, für sofortige Push-Updates)</span></label>
+                            <input type="text" name="trmnlUuid" value="${escapeHtml(room.trmnlUuid || '')}" placeholder="z. B. 267803">
+
+                            <label>TRMNL API Key <span style="font-weight:400;opacity:.6;">(optional)</span></label>
+                            <input type="text" name="trmnlApiKey" value="${escapeHtml(room.trmnlApiKey || '')}" placeholder="Bearer Token aus TRMNL">
+
                             <button type="submit">Raum speichern</button>
                         </form>
                         `
@@ -3336,6 +3364,8 @@ app.post('/admin/update-room', requireAdmin, requirePermission('rooms.edit'), re
 
         room.abteilung = String(req.body.abteilung || '').trim();
         room.roomnumber = String(req.body.roomnumber || '').trim();
+        room.trmnlUuid = String(req.body.trmnlUuid || '').trim();
+        room.trmnlApiKey = String(req.body.trmnlApiKey || '').trim();
 
         saveRooms();
         return res.redirect('/admin/rooms');
@@ -3378,6 +3408,7 @@ app.post('/admin/add-seat', requireAdmin, requirePermission('rooms.edit'), requi
 
         room.seats.push({ name: 'Frei', title: '' });
         saveRooms();
+        pushToTrmnl(room);
         return res.redirect('/admin/rooms');
     } catch (err) {
         console.error(err);
@@ -3400,6 +3431,7 @@ app.post('/admin/remove-seat', requireAdmin, requirePermission('rooms.edit'), re
 
         room.seats.pop();
         saveRooms();
+        pushToTrmnl(room);
         return res.redirect('/admin/rooms');
     } catch (err) {
         console.error(err);
@@ -3419,6 +3451,7 @@ app.post('/admin/clear-seat', requireAdmin, requirePermission('rooms.clearSeat')
 
         room.seats[seat - 1] = { name: 'Frei', title: '' };
         saveRooms();
+        pushToTrmnl(room);
 
         return res.redirect('/admin/rooms');
     } catch (err) {
@@ -4431,6 +4464,7 @@ app.post('/:room/sit/:seat', requireCsrf, (req, res) => {
 
     room.seats[seat - 1] = { name, title: title || 'Mitarbeiter', since: Date.now() };
     saveRooms();
+    pushToTrmnl(room);
 
     const logoExists = fs.existsSync(LOGO_FILE);
     return res.send(`
@@ -4568,6 +4602,7 @@ app.get('/auth/callback', async (req, res) => {
         };
 
         saveRooms();
+        pushToTrmnl(room);
 
         delete req.session.pendingRoom;
         delete req.session.pendingSeat;
